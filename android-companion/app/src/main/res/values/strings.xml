@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Operator Companion</string>
+    <string name="accessibility_service_desc">Enables Android Control Centre and AI Operator to execute touch gestures, automate applications, and assist multi-step tasks.</string>
+</resources>

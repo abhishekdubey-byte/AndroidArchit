@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Android Control Centre & Multi-Device AI Operator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css?v=1.9.38">
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header>
+    <div class="brand">
+      <button class="hdr-icon-btn" id="fleetToggle" title="Show / hide the device list" aria-label="Toggle device list" aria-expanded="true">☰</button>
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div class="brand-title">Android Control Centre</div>
+      </div>
+      <span class="brand-badge">Multi-Device AI Operator</span>
+    </div>
+
+    <div class="header-status">
+      <div class="status-pill">
+        <span class="dot-indicator" id="connectionDot"></span>
+        <span id="connectionStatus">Connecting to Server...</span>
+      </div>
+      <div class="status-pill" id="deviceCountPill">
+        <span>📱</span>
+        <span id="deviceCount">0 Active</span>
+      </div>
+      <div class="status-pill" id="capabilitiesPill" onclick="window.app.showCapabilitiesModal()" style="cursor: pointer; background: rgba(99, 102, 241, 0.15); border-color: rgba(99, 102, 241, 0.4); color: #c7d2fe;" title="Inspect hardware capabilities and Android version matrix">
+        <span>⚙️</span>
+        <span>Capabilities</span>
+      </div>
+      <div class="status-pill" id="diagnosticsPill" onclick="window.app.toggleDiagnosticsModal()" style="cursor: pointer; background: rgba(244, 63, 94, 0.15); border-color: rgba(244, 63, 94, 0.4); color: #fda4af;" title="View remote error telemetry from connected devices">
+        <span>⚠️</span>
+        <span>Diagnostics (<span id="diagnosticsCount">0</span>)</span>
+      </div>
+      <a class="status-pill" href="/permissions.html" target="_blank" style="cursor: pointer; text-decoration: none; background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.4); color: #fde68a;" title="See which permissions each phone has granted">
+        <span>🔐</span>
+        <span>Permissions</span>
+      </a>
+      <a class="status-pill" href="/powerboosters.html" target="_blank" style="cursor: pointer; text-decoration: none; background: linear-gradient(135deg, rgba(139,92,246,.25), rgba(59,130,246,.25)); border-color: rgba(139, 92, 246, 0.5); color: #ddd6fe;" title="PowerBoosters: missions, squad chat, verification and XP">
+        <span>⚡</span>
+        <span>PowerBoosters</span>
+      </a>
+      <a class="status-pill" href="/backup.html" target="_blank" style="cursor: pointer; text-decoration: none; background: rgba(59, 130, 246, 0.15); border-color: rgba(59, 130, 246, 0.4); color: #bfdbfe;" title="Back up phone folders to this laptop">
+        <span>💾</span>
+        <span>Backup</span>
+      </a>
+      <div class="status-pill" id="updatePill" onclick="window.app.pushUpdateToDevices()" style="cursor: pointer; background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.4); color: #6ee7b7;" title="Tell every connected phone to update to the latest app version">
+        <span>⬆️</span>
+        <span id="updatePillText">Update Devices</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Grid Layout -->
+  <main class="main-container">
+
+    <!-- LEFT PANEL: Device Registry & App Launcher -->
+    <aside class="panel glass fleet-panel" id="fleetPanel">
+      <div class="panel-header">
+        <span class="panel-title"><span>📱</span> Device Fleet</span>
+        <button class="nav-btn" id="fleetRefresh" style="font-size: 11px; padding: 4px 8px;" title="Scan USB / Wi-Fi again and update every phone">🔄 Refresh</button>
+      </div>
+      <div class="fleet-note" id="fleetNote" hidden></div>
+
+      <!-- Connected Device Cards -->
+      <div id="deviceListContainer" style="display: flex; flex-direction: column; gap: 12px;">
+        <div style="font-size: 13px; color: var(--text-muted); padding: 12px;">Scanning for connected Android devices...</div>
+      </div>
+
+    </aside>
+
+    <!-- CENTER PANEL: Live Screen Mirroring & Gesture Control -->
+    <section class="mirror-section">
+      <!-- The phone, its keys and the typing box stay pinned in view while the rest of the page scrolls -->
+      <div class="phone-dock">
+      <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; max-width: 420px;">
+        <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary);" id="activeDeviceTitle">
+          No phone selected
+        </div>
+        <button class="mirror-toggle" id="mirrorToggle" title="Screen mirroring uses the phone's battery; turn it on only when needed">
+          <span class="mirror-dot"></span><span id="mirrorToggleText">Mirroring off</span>
+        </button>
+      </div>
+
+      <!-- Phone Bezel -->
+      <div class="phone-bezel">
+        <div class="phone-notch"></div>
+        <div class="phone-screen-container">
+          <canvas id="screenCanvas"></canvas>
+          <div class="coord-badge" id="coordBadge">X: 0, Y: 0</div>
+        </div>
+      </div>
+
+      <!-- Hardware Navigation Dock -->
+      <div class="phone-nav-bar">
+        <button class="nav-btn" data-key="BACK" title="Back">◀ Back</button>
+        <button class="nav-btn" data-key="HOME" title="Home">● Home</button>
+        <button class="nav-btn" data-key="RECENTS" title="Recents">■ Recents</button>
+        <button class="nav-btn" data-key="POWER" title="Power">⚡ Power</button>
+      </div>
+
+      <!-- Quick Text Typing Box -->
+      <div style="display: flex; gap: 8px; width: 100%; max-width: 420px;">
+        <input type="text" id="keyboardText" placeholder="Type text to phone..." style="flex: 1; background: rgba(0,0,0,0.4); border: 1px solid var(--border-color); color: #fff; padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px; outline: none;">
+        <button class="btn-primary" id="sendTextBtn">Send Text</button>
+        <button class="nav-btn" id="keyEnterBtn" title="Enter">↵ Enter</button>
+      </div>
+      </div><!-- /phone-dock -->
+    </section>
+
+    <!-- CENTRE: calls + quick apps on top, camera below — scrolls on its own -->
+    <section class="center-col">
+      <div class="center-top">
+
+      <!-- Phone & Call: dial from laptop, see live call state, listen in -->
+      <div class="call-panel">
+        <div class="call-panel-head">
+          <span class="call-panel-title">📞 Phone &amp; Calls</span>
+          <span class="call-state-chip" id="callStateInline">Idle</span>
+        </div>
+        <div class="dialer-row">
+          <input type="tel" id="callNumberInput" class="dialer-input" placeholder="Number to call (e.g. +91…)" spellcheck="false">
+          <button class="btn-primary dialer-call" id="btnDialCall" title="Place this call on the phone and talk through the laptop">📞 Call</button>
+        </div>
+        <div class="call-panel-audio">
+          <div class="audio-waves" id="audioWaves">
+            <div class="audio-bar"></div><div class="audio-bar"></div><div class="audio-bar"></div><div class="audio-bar"></div><div class="audio-bar"></div>
+          </div>
+          <span style="font-size: 10.5px; color: #94a3b8; flex: 1;" id="audioStatusText">Listen to calls from the laptop</span>
+          <button class="btn-primary" id="toggleAudioBtn" style="font-size: 11px; padding: 5px 12px; background: rgba(6, 182, 212, 0.2); border: 1px solid rgba(6, 182, 212, 0.4); color: #67e8f9;">
+            🔊 Listen Live
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick App Launcher -->
+      <div class="apps-card">
+        <div class="apps-card-head"><span class="call-panel-title">🚀 Quick Apps</span><span class="apps-pop-dev" id="appsPopDevice"></span></div>
+        <div class="app-grid" id="appsContainer">
+          <div style="font-size: 12px; color: var(--text-muted); grid-column: 1 / -1;">Select a phone to see its apps.</div>
+        </div>
+      </div>
+      </div><!-- /center-top -->
+
+      <!-- Headless Camera & Video (no UI on the phone; saved to the laptop, removed from the phone) -->
+      <div class="cam-card">
+        <div class="cam-main">
+        <div class="cam-title-row"><span class="cam-icon">📸</span><span class="cam-name">Headless Camera &amp; Video</span></div>
+
+        <!-- Live camera preview: real-time feed from the phone for verification / recognition -->
+        <div class="cam-live">
+          <div class="cam-live-head">
+            <button class="cam-btn cam-live-btn" id="btnLivePreview" title="Watch the phone's camera live">▶ Live Preview</button>
+            <button class="cam-btn" id="btnSilentRearPhoto" title="Take a photo with the rear camera">📷 Rear Photo</button>
+            <button class="cam-btn" id="btnSilentFrontPhoto" title="Take a photo with the front camera">🤳 Front Photo</button>
+            <span class="cam-live-clock" id="liveClock" hidden title="How long the live preview has been running">⏱ 00:00</span>
+            <div class="cam-live-tools" id="liveTools" hidden>
+              <button class="cam-btn" id="btnLiveLens" title="Switch front / rear camera">🔄 Front</button>
+              <button class="cam-btn" id="btnLiveMute" title="Hear the phone microphone live">🔊 Sound</button>
+              <button class="cam-btn cam-live-save" id="btnLiveSave" title="Record this live preview to the laptop">⏺ Save</button>
+              <span class="cam-live-fps" id="liveFps">—</span>
+            </div>
+          </div>
+          <div class="cam-live-summary" id="liveSummary" hidden></div>
+        </div>
+        <div class="cam-live-stage" id="liveStage" hidden>
+          <img id="liveImg" alt="Live camera preview">
+          <div class="cam-live-badge" id="liveBadge">● LIVE · rear</div>
+        </div>
+
+        <div class="cam-row">
+          <label>Camera
+            <select id="videoLensSelect" class="cam-select">
+              <option value="back" selected>📷 Rear</option>
+              <option value="front">🤳 Front</option>
+            </select>
+          </label>
+          <label>Length
+            <select id="videoDurationSelect" class="cam-select">
+              <option value="5">5 s</option>
+              <option value="10" selected>10 s</option>
+              <option value="15">15 s</option>
+              <option value="25">25 s</option>
+              <option value="30">30 s</option>
+              <option value="45">45 s</option>
+              <option value="60">1 min</option>
+              <option value="0">Until I stop</option>
+            </select>
+          </label>
+          <div class="cam-chips">
+            <span class="video-chip" data-sec="10">10s</span>
+            <span class="video-chip" data-sec="30">30s</span>
+            <span class="video-chip" data-sec="60">1m</span>
+            <span class="video-chip" data-sec="0" title="Keep recording until you press Stop">∞</span>
+          </div>
+          <button class="cam-btn cam-rec" id="btnRecordVideoCustom" title="Record a video with sound and save it to this laptop">
+            <span id="recordVideoBtnIcon">🎥</span>
+            <span id="recordVideoBtnText">Record Video</span>
+          </button>
+        </div>
+
+        <div class="cam-status" id="captureStatus" hidden></div>
+        </div><!-- /cam-main -->
+
+        <!-- Recent captures: top-right of the centre column, scrolls on its own -->
+        <div class="cam-gallery-wrap">
+          <div class="cam-gallery-head">
+            <span>Captures <span class="cam-count" id="captureCount"></span></span>
+            <select id="captureScope" class="cam-select cam-scope" title="Show captures from the selected phone or from every phone">
+              <option value="device">This phone</option>
+              <option value="all">All phones</option>
+            </select>
+          </div>
+          <div class="cam-gallery" id="captureGallery"><div class="cam-empty">No captures yet</div></div>
+        </div>
+      </div>
+      <!-- Device Storage: the selected phone's files, listed as soon as it connects; scrolls on its own -->
+      <div class="storage-card">
+        <div class="storage-head">
+          <span class="call-panel-title">📁 Device Storage <span class="apps-pop-dev" id="storageDevice"></span></span>
+          <button class="nav-btn" onclick="window.app.openFileManager()" title="Open the full file manager (upload, download, folders) in a new tab">Open File Manager ↗</button>
+        </div>
+        <div class="file-list" id="fileListContainer"></div>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: AI Task Operator & Execution Engine -->
+    <aside class="panel glass ai-section">
+      <div class="panel-header">
+        <span class="panel-title"><span>🤖</span> AI Task Operator</span>
+        <button class="btn-voice" id="voiceMicBtn" title="Voice Command">
+          <span>🎙️</span> <span id="voiceMicText">Voice Command</span>
+        </button>
+      </div>
+
+      <!-- AI Natural Language Prompt Bar -->
+      <div class="ai-command-box">
+        <div class="ai-input-wrapper">
+          <input type="text" id="taskInput" class="ai-input" placeholder="Say or type instruction to phone...">
+          <button class="btn-primary" id="submitTaskBtn">Run Plan</button>
+        </div>
+
+        <!-- Preset Task Chips -->
+        <div class="task-chips">
+          <span class="task-chip" onclick="window.app.setTaskPrompt('whatsapp: view and like all statuses')">
+            💚 WhatsApp: View &amp; like all statuses
+          </span>
+          <span class="task-chip" onclick="window.app.setTaskPrompt('open whatsapp and reply to bro code')">
+            💬 WhatsApp: Reply to Bro Code
+          </span>
+          <span class="task-chip" onclick="window.app.setTaskPrompt('open instagram and like post')">
+            ❤️ Instagram: Like Post
+          </span>
+          <span class="task-chip" onclick="window.app.setTaskPrompt('open instagram story')">
+            📷 Instagram: Watch Story
+          </span>
+          <span class="task-chip" onclick="window.app.setTaskPrompt('call bro code')">
+            📞 Phone Call: Call Bro Code
+          </span>
+          <span class="task-chip" onclick="window.app.setTaskPrompt('capture photo with rear camera and transfer to laptop')">
+            📸 Capture Photo to Laptop
+          </span>
+          <span class="task-chip" onclick="window.app.setTaskPrompt('check battery and storage status of device')">
+            🔋 Battery & Storage Audit
+          </span>
+        </div>
+      </div>
+
+      <!-- Scheduled routines: run an instruction every day / on chosen days at a set time -->
+      <div class="routines-card">
+        <div class="routines-head">
+          <span class="panel-title" style="font-size: 12px;"><span>⏰</span> Routines</span>
+          <button class="nav-btn" id="routineNewBtn" title="Schedule a task to run automatically">＋ New</button>
+        </div>
+        <form class="routine-form" id="routineForm" hidden>
+          <input type="hidden" id="rtId">
+          <label>What
+            <select id="rtPreset" class="cam-select">
+              <option value="whatsapp: view and like all statuses">💚 WhatsApp — view &amp; like all statuses</option>
+              <option value="whatsapp: only view all statuses">👀 WhatsApp — only view all statuses</option>
+              <option value="__custom">✏️ Custom instruction…</option>
+            </select>
+          </label>
+          <input type="text" id="rtInstruction" class="ai-input rt-custom" placeholder="Instruction, e.g. open instagram story" hidden>
+          <div class="rt-row">
+            <label>Phone <select id="rtDevice" class="cam-select"></select></label>
+            <label>Time <input type="time" id="rtTime" class="cam-select" value="09:00" required></label>
+          </div>
+          <div class="rt-days" id="rtDays" title="No day selected = every day">
+            <button type="button" data-d="0">M</button><button type="button" data-d="1">T</button><button type="button" data-d="2">W</button><button type="button" data-d="3">T</button><button type="button" data-d="4">F</button><button type="button" data-d="5">S</button><button type="button" data-d="6">S</button>
+            <span class="rt-days-hint" id="rtDaysHint">every day</span>
+          </div>
+          <div class="rt-actions">
+            <button type="button" class="nav-btn" id="rtCancel">Cancel</button>
+            <button type="submit" class="btn-primary">Save routine</button>
+          </div>
+        </form>
+        <div class="routine-list" id="routineList"></div>
+      </div>
+
+      <!-- Human-in-the-Loop Approval Modal Container -->
+      <div id="approvalContainer">
+        <!-- Rendered dynamically when approval is requested -->
+      </div>
+
+      <!-- Step-by-Step Execution Plan -->
+      <div class="panel-header" style="margin-top: 10px;">
+        <span class="panel-title" style="font-size: 13px;"><span>📋</span> Execution Plan</span>
+      </div>
+      <div id="taskTimelineContainer">
+        <div style="font-size: 12px; color: var(--text-muted); padding: 12px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+          No active tasks running. Enter an instruction above or choose a preset action to begin autonomous execution.
+        </div>
+      </div>
+
+      <!-- Protocol & Safety Information -->
+      <div style="margin-top: auto; padding: 12px; background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; font-size: 11px; color: #a5b4fc;">
+        🛡️ <strong>Safety Guard Active:</strong> Sensitive operations (sending messages, publishing, file deletion) mandate interactive approval prior to transmission.
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- INCOMING & ACTIVE CALL MODAL OVERLAY -->
+  <div id="callOverlay" class="call-overlay" style="display: none;">
+    <div class="call-card glass">
+      <!-- Call Status Header Badge -->
+      <div class="call-header">
+        <span class="call-status-badge" id="callStatusBadge">
+          <span class="call-pulse-dot"></span>
+          <span id="callStateLabel">Incoming Phone Call</span>
+        </span>
+        <span class="call-device-badge" id="callDeviceLabel">—</span>
+      </div>
+
+      <!-- Animated Avatar / Ringing Indicator -->
+      <div class="call-avatar-container">
+        <div class="call-avatar-ripple" id="callAvatarRipple"></div>
+        <div class="call-avatar-icon">
+          <span id="callAvatarEmoji">📞</span>
+        </div>
+      </div>
+
+      <!-- Caller Details -->
+      <div class="call-info">
+        <div class="caller-name" id="callerNameDisplay">Incoming Caller</div>
+        <div class="caller-number" id="callerNumberDisplay">+91 ••••• •••••</div>
+        <div class="call-duration" id="callDurationDisplay" style="display: none;">00:00</div>
+      </div>
+
+      <!-- Bidirectional Audio Bridge Telemetry (Shown when Call is Active) -->
+      <div class="call-audio-bridge" id="callAudioBridge" style="display: none;">
+        <div class="audio-channel">
+          <div class="channel-label">
+            <span>🎙️ Laptop Microphone</span>
+            <span class="channel-status" id="micChannelStatus">Transmitting Voice to Caller</span>
+          </div>
+          <div class="channel-meter">
+            <div class="meter-bar" id="laptopMicMeter" style="width: 50%;"></div>
+          </div>
+        </div>
+
+        <div class="audio-channel">
+          <div class="channel-label">
+            <span>🔊 Laptop Speakers</span>
+            <span class="channel-status" id="speakerChannelStatus">Listening to Caller Live</span>
+          </div>
+          <div class="call-equalizer active" id="callerAudioEqualizer">
+            <div class="eq-bar"></div>
+            <div class="eq-bar"></div>
+            <div class="eq-bar"></div>
+            <div class="eq-bar"></div>
+            <div class="eq-bar"></div>
+            <div class="eq-bar"></div>
+            <div class="eq-bar"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Call Action Buttons -->
+      <div class="call-actions" id="incomingCallActions">
+        <button class="btn-call-accept" id="btnAcceptCall">
+          <span class="btn-icon">📞</span>
+          <span>Receive & Speak via Laptop</span>
+        </button>
+        <button class="btn-call-decline" id="btnDeclineCall">
+          <span class="btn-icon">📵</span>
+          <span>Decline</span>
+        </button>
+      </div>
+
+      <div class="call-actions" id="activeCallActions" style="display: none;">
+        <button class="btn-call-mute" id="btnMuteLaptopMic">
+          <span id="muteMicIcon">🎙️</span>
+          <span id="muteMicText">Mute Mic</span>
+        </button>
+        <button class="btn-call-decline" id="btnEndActiveCall" style="flex: 1.5;">
+          <span class="btn-icon">🛑</span>
+          <span>End Call</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Media Preview Toast / Modal -->
+  <div id="mediaPreviewToast" style="display: none; position: fixed; bottom: 24px; right: 24px; z-index: 9999; background: #0f172a; border: 1px solid #6366f1; border-radius: 12px; padding: 14px; box-shadow: 0 10px 25px rgba(0,0,0,0.6); max-width: 320px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <span style="font-weight: 600; font-size: 13px; color: #e2e8f0;" id="mediaToastTitle">📸 Silent Capture Ready</span>
+      <button onclick="document.getElementById('mediaPreviewToast').style.display='none'" style="background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 14px;">✕</button>
+    </div>
+    <div id="mediaToastContent" style="margin-bottom: 8px;"></div>
+    <div style="display: flex; justify-content: flex-end; gap: 8px;">
+      <a id="mediaToastDownloadLink" href="#" target="_blank" class="btn-primary" style="font-size: 11px; padding: 4px 10px; text-decoration: none;">Open / Download</a>
+    </div>
+  </div>
+
+  <!-- CENTRALIZED REMOTE DIAGNOSTICS & ERROR FEED MODAL -->
+  <div id="diagnosticsModal" class="call-overlay" style="display: none; align-items: center; justify-content: center;">
+    <div class="call-card glass" style="max-width: 680px; width: 92%; max-height: 85vh; display: flex; flex-direction: column; padding: 20px; gap: 14px; text-align: left;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 22px;">⚠️</span>
+          <div>
+            <div style="font-size: 15px; font-weight: 700; color: #f8fafc;">Centralized Remote Diagnostics & Error Telemetry</div>
+            <div style="font-size: 11px; color: #94a3b8;">Device failures are sent here automatically without displaying error dialogs on Android</div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="nav-btn" style="font-size: 11px; padding: 4px 10px;" onclick="window.app.clearDiagnostics()">🗑️ Clear</button>
+          <button onclick="document.getElementById('diagnosticsModal').style.display='none'" style="background: none; border: none; color: #94a3b8; font-size: 18px; cursor: pointer;">✕</button>
+        </div>
+      </div>
+
+      <!-- Filter Row -->
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <label style="font-size: 11px; color: #94a3b8;">Filter Device:</label>
+        <select id="diagDeviceFilter" onchange="window.app.renderDiagnosticsList()" style="background: rgba(15,23,42,0.9); border: 1px solid rgba(255,255,255,0.15); color: #fff; font-size: 11px; padding: 4px 8px; border-radius: 6px; outline: none;">
+          <option value="all">All Connected Devices</option>
+        </select>
+        <span style="font-size: 11px; color: #64748b; margin-left: auto;" id="diagTotalCount">0 total errors</span>
+      </div>
+
+      <!-- Diagnostic Error Cards Container -->
+      <div id="diagnosticsListContainer" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; max-height: 55vh;">
+        <div style="text-align: center; color: #64748b; padding: 40px 10px; font-size: 13px;">
+          ✅ No errors reported. All device operations functioning normally across connected Android devices.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DEVICE CAPABILITY & PLATFORM MATRIX MODAL -->
+  <div id="capabilitiesModal" class="call-overlay" style="display: none; align-items: center; justify-content: center;">
+    <div class="call-card glass" style="max-width: 720px; width: 92%; max-height: 85vh; display: flex; flex-direction: column; padding: 20px; gap: 14px; text-align: left;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 22px;">⚙️</span>
+          <div>
+            <div style="font-size: 15px; font-weight: 700; color: #f8fafc;">Device Capabilities & Platform Compatibility Matrix</div>
+            <div style="font-size: 11px; color: #94a3b8;">Dynamic capability detection across Android 11, 12, 13, 14, 15 and OEM hardware</div>
+          </div>
+        </div>
+        <button onclick="document.getElementById('capabilitiesModal').style.display='none'" style="background: none; border: none; color: #94a3b8; font-size: 18px; cursor: pointer;">✕</button>
+      </div>
+
+      <!-- Target Device Selector -->
+      <div style="display: flex; gap: 10px; align-items: center; background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 8px;">
+        <label style="font-size: 12px; font-weight: 600; color: #e2e8f0;">Target Device:</label>
+        <select id="capDeviceSelect" onchange="window.app.renderCapabilitiesView()" style="background: rgba(15,23,42,0.9); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 12px; padding: 4px 10px; border-radius: 6px; outline: none; flex: 1;">
+          <!-- Populated by JS -->
+        </select>
+        <button class="nav-btn" style="font-size: 11px; padding: 4px 10px;" onclick="window.app.refreshDeviceCapabilities()">🔄 Query Capabilities</button>
+        <button class="btn-primary" style="font-size: 11px; padding: 4px 10px; background: rgba(99,102,241,0.3); border: 1px solid rgba(99,102,241,0.5);" onclick="window.app.wakeCurrentDevice()">⚡ Wake Rails</button>
+      </div>
+
+      <!-- Capabilities Grid Container -->
+      <div id="capabilitiesContent" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; max-height: 60vh;">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js?v=1.9.38"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- soft dark backing bolt for depth -->
+    <path android:fillColor="#552A0A5E"
+        android:pathData="M66,16 L34,60 L52,60 L42,96 L84,46 L62,46 Z"
+        android:fillAlpha="0.9"/>
+    <!-- main neon bolt: yellow -> orange -->
+    <path android:pathData="M64,18 L36,59 L53,59 L44,92 L80,47 L60,47 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="44" android:startY="18" android:endX="70" android:endY="92">
+                <item android:offset="0" android:color="#FFFEF9C3"/>
+                <item android:offset="0.45" android:color="#FFFDE047"/>
+                <item android:offset="1" android:color="#FFF97316"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- bright highlight edge -->
+    <path android:fillColor="#CCFFFFFF"
+        android:pathData="M64,18 L50,38 L56,38 L62,25 Z"/>
+</vector>

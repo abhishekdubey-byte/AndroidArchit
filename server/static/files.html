@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Device Files</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css?v=1.8.9">
+  <link rel="stylesheet" href="/css/files.css?v=1.8.9">
+</head>
+<body class="fm-body">
+  <header class="fm-header">
+    <a class="fm-brand" href="/">⚡ Control Centre</a>
+    <span class="fm-sep">/</span>
+    <span class="fm-title">Files</span>
+    <select id="fmDevice" class="fm-select" title="Device"></select>
+    <span id="fmDeviceInfo" class="fm-muted"></span>
+    <span class="fm-gap"></span>
+    <a class="fm-btn" href="/permissions.html" target="_blank" title="Which permissions each phone has granted">🔐 Permissions</a>
+    <a class="fm-btn" href="/backup.html" target="_blank" title="Back up phone folders to this laptop">💾 Backup</a>
+    <a class="fm-btn" href="/pair.html" target="_blank" title="Connect phones that are on other networks">📡 Pair remote phone</a>
+    <button class="fm-btn" id="fmNewTab" title="Open another device in a new tab">＋ New tab</button>
+  </header>
+
+  <div class="fm-layout">
+    <aside class="fm-side">
+      <div class="fm-side-title">Storage</div>
+      <div id="fmVolumes"></div>
+      <div id="fmSpace" class="fm-space"></div>
+      <div class="fm-side-title">Quick access</div>
+      <div id="fmShortcuts"></div>
+    </aside>
+
+    <main class="fm-main">
+      <div class="fm-toolbar">
+        <button class="fm-btn" id="fmUp" title="Up one level (Backspace)">⬆</button>
+        <button class="fm-btn" id="fmRefresh" title="Refresh (F5)">⟳</button>
+        <nav id="fmCrumbs" class="fm-crumbs"></nav>
+        <input id="fmPathInput" class="fm-input fm-path-input" spellcheck="false" title="Type a path and press Enter">
+        <input id="fmFilter" class="fm-input" placeholder="Filter…" spellcheck="false">
+        <label class="fm-check"><input type="checkbox" id="fmHidden"> Hidden</label>
+        <div class="fm-seg" title="View">
+          <button class="fm-btn" id="fmViewList" title="List view">☰</button><button class="fm-btn" id="fmViewGrid" title="Thumbnail view">▦</button>
+        </div>
+      </div>
+
+      <div class="fm-toolbar fm-actions">
+        <button class="fm-btn fm-primary" id="fmUploadBtn">⬆ Upload files</button>
+        <button class="fm-btn" id="fmUploadDirBtn">⬆ Upload folder</button>
+        <button class="fm-btn" id="fmMkdir">＋ New folder</button>
+        <span class="fm-gap"></span>
+        <button class="fm-btn" id="fmSelAllBtn" title="Select every file shown (Ctrl+A)">☑ Select all</button>
+        <span id="fmSelInfo" class="fm-muted"></span>
+        <button class="fm-btn" data-sel id="fmDownloadSel">⬇ Download</button>
+        <button class="fm-btn" data-sel id="fmBackupSel" title="Add the selected folders/files to this phone's backup">💾 Add to backup</button>
+        <button class="fm-btn" data-sel id="fmCopy">Copy</button>
+        <button class="fm-btn" data-sel id="fmCut">Cut</button>
+        <button class="fm-btn" id="fmPaste" hidden>Paste</button>
+        <button class="fm-btn fm-danger" data-sel id="fmDelete">Delete</button>
+        <input type="file" id="fmFileInput" multiple hidden>
+        <input type="file" id="fmDirInput" webkitdirectory multiple hidden>
+      </div>
+
+      <div id="fmBanner" class="fm-banner" hidden></div>
+
+      <div id="fmDrop" class="fm-table-wrap">
+        <div id="fmGrid" class="fm-grid" hidden></div>
+        <table class="fm-table" id="fmTable">
+          <thead>
+            <tr>
+              <th class="fm-col-check"><input type="checkbox" id="fmSelectAll"></th>
+              <th data-sort="name">Name</th>
+              <th data-sort="size" class="fm-col-size">Size</th>
+              <th data-sort="mtime" class="fm-col-date">Modified</th>
+              <th class="fm-col-act"></th>
+            </tr>
+          </thead>
+          <tbody id="fmRows"></tbody>
+        </table>
+        <div id="fmEmpty" class="fm-empty" hidden></div>
+        <div class="fm-drop-hint">Drop files or folders to upload here</div>
+      </div>
+      <div id="fmStatus" class="fm-status"></div>
+    </main>
+  </div>
+
+  <div id="fmTransfers" class="fm-transfers" hidden>
+    <div class="fm-transfers-head"><span id="fmTransfersTitle">Transfers</span><button class="fm-btn" id="fmTransfersClear">Clear</button></div>
+    <div id="fmTransfersList"></div>
+  </div>
+  <div id="fmToasts" class="fm-toasts"></div>
+
+  <div id="fmViewer" class="fm-viewer" hidden>
+    <div class="fm-viewer-bar">
+      <span id="fmViewerName" class="fm-viewer-name"></span>
+      <span id="fmViewerIdx" class="fm-muted"></span>
+      <span class="fm-gap"></span>
+      <button class="fm-btn" id="fmViewerDl" title="Download">⬇ Download</button>
+      <button class="fm-btn" id="fmViewerClose" title="Close (Esc)">✕ Close</button>
+    </div>
+    <button class="fm-viewer-nav prev" id="fmViewerPrev" title="Previous (←)">‹</button>
+    <div id="fmViewerStage" class="fm-viewer-stage"></div>
+    <button class="fm-viewer-nav next" id="fmViewerNext" title="Next (→)">›</button>
+  </div>
+
+  <script src="/js/files.js?v=1.8.9"></script>
+</body>
+</html>

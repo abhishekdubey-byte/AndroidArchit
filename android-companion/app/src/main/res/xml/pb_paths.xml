@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="pb_files" path="pb_files/" />
+    <cache-path name="pb_capture" path="pb_capture/" />
+    <files-path name="pb_outbox" path="pb_outbox/" />
+</paths>

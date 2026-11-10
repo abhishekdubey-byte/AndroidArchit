@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phone Backup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css?v=1.8.9">
+  <link rel="stylesheet" href="/css/files.css?v=1.8.9">
+  <style>
+    .bk-main { padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); align-items: start; }
+    .bk-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md, 10px); padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .bk-card.offline { opacity: .7; }
+    .bk-head { display: flex; align-items: center; gap: 8px; }
+    .bk-name { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bk-badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border-color); color: var(--text-secondary); white-space: nowrap; }
+    .bk-badge.on { color: #6ee7b7; border-color: rgba(16,185,129,.5); }
+    .bk-folder { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--text-secondary); word-break: break-all; }
+    .bk-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-secondary); }
+    .bk-presets { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+    .bk-custom { display: flex; flex-direction: column; gap: 4px; }
+    .bk-row { display: flex; align-items: center; gap: 6px; font-family: "JetBrains Mono", monospace; font-size: 12px; min-width: 0; }
+    .bk-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .bk-add { display: flex; gap: 6px; }
+    .bk-add input { flex: 1; min-width: 0; }
+    .bk-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .bk-bar { height: 6px; background: var(--bg-card-hover); border-radius: 99px; overflow: hidden; }
+    .bk-bar > div { height: 100%; width: 0; background: var(--accent-primary); transition: width .3s; }
+    .bk-status { font-size: 12px; color: var(--text-secondary); word-break: break-word; }
+    .bk-status.err { color: #fda4af; }
+    .bk-empty { padding: 32px; color: var(--text-secondary); }
+    details.bk-errors { font-size: 12px; color: #fda4af; }
+    details.bk-errors li { word-break: break-all; }
+  </style>
+</head>
+<body class="fm-body">
+  <header class="fm-header">
+    <a class="fm-brand" href="/">⚡ Control Centre</a>
+    <span class="fm-sep">/</span>
+    <span class="fm-title">Phone Backup</span>
+    <span class="fm-gap"></span>
+    <span class="fm-muted">Copies phone → laptop. Nothing on the phone is changed; files deleted on the phone are kept in "Deleted on phone".</span>
+    <a class="fm-btn" href="/files.html">📁 Files</a>
+  </header>
+  <main id="bkMain" class="bk-main"><div class="bk-empty">Loading phones…</div></main>
+  <div id="fmToasts" class="fm-toasts"></div>
+  <script src="/js/backup.js?v=1.8.9"></script>
+</body>
+</html>

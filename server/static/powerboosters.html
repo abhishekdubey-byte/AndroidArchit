@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PowerBoosters HQ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/pb.css?v=1.9.3">
+</head>
+<body>
+  <header class="pb-top">
+    <div class="pb-brand"><span class="pb-logo">⚡</span><div><b>POWERBOOSTERS</b><small>Commander HQ</small></div></div>
+    <nav class="pb-tabs" id="tabs">
+      <button data-tab="chat" class="on">💬 Squad Chat <i id="badgeChat"></i></button>
+      <button data-tab="missions">🎯 Missions</button>
+      <button data-tab="review">🛡️ Verification <i id="badgeReview"></i></button>
+      <button data-tab="squad">🏆 Squad</button>
+      <button data-tab="alerts">🔔 <i id="badgeAlerts"></i></button>
+    </nav>
+    <div class="pb-right">
+      <span class="pb-live" id="live">● connecting</span>
+      <button class="ghost" id="themeBtn" title="Dark / light">🌓</button>
+      <a class="ghost" href="/" title="Back to Control Centre">↩ Control Centre</a>
+    </div>
+  </header>
+
+  <!-- CHAT -->
+  <section class="pane on" id="pane-chat">
+    <aside class="conv-list">
+      <input id="convSearch" placeholder="Search squad…">
+      <div id="convs"></div>
+    </aside>
+    <div class="chat">
+      <div class="chat-head" id="chatHead"><span class="muted">Pick a squad member</span></div>
+      <div class="chat-search hidden" id="msgSearchBar"><input id="msgSearch" placeholder="Search this conversation…"></div>
+      <div class="msgs" id="msgs"></div>
+      <div class="typing hidden" id="typing">typing…</div>
+      <div class="reply-bar hidden" id="replyBar"></div>
+      <div class="pending-files" id="chatFiles"></div>
+      <form class="composer" id="composer">
+        <label class="iconbtn" title="Attach files">📎<input type="file" id="chatFile" multiple hidden></label>
+        <input id="chatInput" autocomplete="off" placeholder="Message…">
+        <button class="send">➤</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- MISSIONS -->
+  <section class="pane" id="pane-missions">
+    <div class="split">
+      <form class="card form" id="missionForm">
+        <h2 id="mfTitle">Deploy a mission</h2>
+        <input type="hidden" name="id">
+        <label>Mission title<input name="title" required maxlength="200"></label>
+        <label>Description<textarea name="description" rows="2"></textarea></label>
+        <label>Detailed instructions<textarea name="instructions" rows="4"></textarea></label>
+        <div class="row">
+          <label>Distribution<select name="distribution"><option value="broadcast">🌐 Global — every registered phone</option><option value="targeted">🎯 Targeted — one phone</option></select></label>
+          <label class="target-wrap hidden">Target device<select name="target"></select></label>
+        </div>
+        <div class="row">
+          <label>Priority<select name="priority"><option>low</option><option selected>normal</option><option>high</option><option>critical</option></select></label>
+          <label>XP reward<input name="xp_reward" type="number" min="0" value="100"></label>
+          <label>Bonus XP<input name="bonus_xp" type="number" min="0" value="0"></label>
+        </div>
+        <div class="row">
+          <label>Deadline<input name="deadline" type="datetime-local"></label>
+          <label>Attempts allowed<input name="max_attempts" type="number" min="1" value="3"></label>
+          <label>Max file size (MB)<input name="max_attachment_mb" type="number" min="1" value="50"></label>
+        </div>
+        <label>Expected deliverables<textarea name="deliverables" rows="2"></textarea></label>
+        <label>Allowed file formats <small>(comma separated, empty = any)</small><input name="allowed_formats" placeholder="jpg, png, mp4, pdf"></label>
+        <label>Submission instructions<textarea name="submission_instructions" rows="2"></textarea></label>
+        <label>Reference attachments<input type="file" id="refFiles" multiple></label>
+        <div class="pending-files" id="refList"></div>
+        <div class="actions">
+          <button type="button" class="ghost" id="newMission">New</button>
+          <button type="submit" class="ghost" data-mode="draft">💾 Save draft</button>
+          <button type="submit" class="primary" data-mode="publish">🚀 Deploy</button>
+        </div>
+      </form>
+      <div>
+        <h2>Missions</h2>
+        <div id="missionList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- VERIFICATION CENTRE -->
+  <section class="pane" id="pane-review">
+    <div class="filters" id="reviewFilters">
+      <select name="status"><option value="pending">⏳ Pending</option><option value="resubmission">🔁 Resubmissions</option><option value="approved">✅ Approved</option><option value="rejected">❌ Rejected</option><option value="revision_requested">✏️ Revision requested</option><option value="">All</option></select>
+      <select name="device_id"><option value="">All devices</option></select>
+      <select name="mission_id"><option value="">All missions</option></select>
+      <select name="priority"><option value="">Any priority</option><option>low</option><option>normal</option><option>high</option><option>critical</option></select>
+      <input name="attempt" type="number" min="1" placeholder="Attempt #">
+      <input name="since" type="date" title="Submitted from">
+      <input name="until" type="date" title="Submitted until">
+    </div>
+    <div class="split review">
+      <div id="queue"></div>
+      <div id="reviewDetail" class="card"><p class="muted">Select a submission to inspect it.</p></div>
+    </div>
+  </section>
+
+  <!-- SQUAD -->
+  <section class="pane" id="pane-squad">
+    <div class="split">
+      <div>
+        <div class="seg" id="lbSeg"><button data-p="global" class="on">All-time</button><button data-p="weekly">Weekly</button><button data-p="monthly">Monthly</button></div>
+        <div id="leaderboard"></div>
+        <h2>Reward policy</h2>
+        <form class="card form" id="policyForm">
+          <div class="row">
+            <label>Default XP per approved mission<input name="mission_approved" type="number" min="0"></label>
+            <label>Bonus-quality XP (suggested)<input name="bonus_quality" type="number" min="0"></label>
+          </div>
+          <div class="row">
+            <label>First-try approval bonus<input name="first_try_bonus" type="number" min="0"></label>
+            <label>Level curve (XP for level 2)<input name="level_base" type="number" min="10"></label>
+          </div>
+          <div class="actions"><button class="primary">Save policy</button></div>
+        </form>
+      </div>
+      <div>
+        <div id="profile" class="card"><p class="muted">Pick a member on the leaderboard.</p></div>
+        <h2>XP ledger</h2>
+        <div id="ledger" class="ledger"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ALERTS -->
+  <section class="pane" id="pane-alerts"><div class="narrow"><div class="actions"><button class="ghost" id="readAll">Mark all read</button></div><div id="alerts"></div></div></section>
+
+  <div id="toast"></div>
+  <script src="/js/pb-mood.js?v=1.9.2"></script>
+  <script src="/js/pb.js?v=1.9.3"></script>
+</body>
+</html>

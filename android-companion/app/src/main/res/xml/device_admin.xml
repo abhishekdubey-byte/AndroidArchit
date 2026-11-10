@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Device Owner is used only for silent install/uninstall of this app: no policies are requested. -->
+<device-admin>
+    <uses-policies />
+</device-admin>

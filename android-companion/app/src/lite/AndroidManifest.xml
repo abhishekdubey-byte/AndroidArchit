@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lite edition: no Accessibility Service (Play Protect blocks sideloaded apps that declare one) -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <service
+            android:name="com.operator.companion.service.CompanionAccessibilityService"
+            tools:node="remove" />
+    </application>
+</manifest>

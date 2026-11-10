@@ -1,0 +1,24 @@
+__SDK
+33
+__PKG
+    versionName=1.8.8
+        android.permission.ANSWER_PHONE_CALLS: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.READ_PHONE_STATE: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.CALL_PHONE: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.READ_MEDIA_IMAGES: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.CAMERA: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.RECORD_AUDIO: granted=true, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+__MES
+Uid mode: MANAGE_EXTERNAL_STORAGE: allow
+MANAGE_EXTERNAL_STORAGE: default; rejectTime=+4h3m3s38ms ago
+__SAW
+SYSTEM_ALERT_WINDOW: allow; time=+1h5m30s578ms ago; rejectTime=+3h49m27s876ms ago
+__RIP
+REQUEST_INSTALL_PACKAGES: allow; time=+3h13m22s436ms ago
+__ACC
+com.google.android.marvin.talkback/com.google.android.accessibility.accessibilitymenu.AccessibilityMenuService:com.operator.companion/.service.CompanionAccessibilityService
+__IDLE
+1
+__PID
+30384
+__END

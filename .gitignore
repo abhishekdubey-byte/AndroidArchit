@@ -1,0 +1,44 @@
+# ---- Secrets (never commit) ----
+android-companion/release.keystore
+android-companion/keystore.properties
+android-companion/companion.properties
+*.jks
+*.keystore
+.env
+.env.*
+.dev.vars
+
+# ---- Built APKs ----
+*.apk
+*.aab
+
+# ---- Android / Gradle ----
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# ---- Server runtime data (tokens, DB, user files, logs) ----
+server/storage/
+
+# ---- Node / Cloudflare relay ----
+node_modules/
+.wrangler/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+*.log

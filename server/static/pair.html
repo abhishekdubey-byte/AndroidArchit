@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pair Phones</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css?v=1.8.9">
+  <link rel="stylesheet" href="/css/files.css?v=1.8.9">
+  <style>
+    .pr-wrap { max-width: 980px; margin: 0 auto; padding: 18px 16px 40px; overflow-y: auto; }
+    .pr-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 16px; margin-bottom: 14px; }
+    .pr-card h2 { font-size: 15px; margin: 0 0 4px; }
+    .pr-card p { color: var(--text-secondary); font-size: 13px; margin: 4px 0 10px; line-height: 1.5; }
+    .pr-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+    .pr-row .fm-input { flex: 1; min-width: 220px; }
+    .pr-mono { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-primary); word-break: break-all; }
+    .pr-grid { display: grid; grid-template-columns: 220px 1fr; gap: 18px; align-items: start; }
+    #prQr { background: #fff; padding: 10px; border-radius: var(--radius-sm); width: 200px; height: 200px; display: flex; align-items: center; justify-content: center; color: #333; font-size: 12px; text-align: center; }
+    .pr-ok { color: var(--accent-emerald); } .pr-bad { color: var(--text-muted); }
+    code { font-family: var(--font-mono); font-size: 12px; background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }
+    @media (max-width: 700px) { .pr-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body class="fm-body">
+  <header class="fm-header">
+    <a class="fm-brand" href="/">⚡ Control Centre</a><span class="fm-sep">/</span><span class="fm-title">Pair phones</span>
+    <span class="fm-gap"></span><a class="fm-btn" href="/files.html">📁 Files</a>
+  </header>
+  <div class="pr-wrap">
+    <div class="pr-card">
+      <h2>1 · How phones reach this laptop</h2>
+      <p>Phones on other networks (mobile data, another Wi-Fi) connect <em>out</em> to this laptop, so they need an address they can reach.
+        Same Wi-Fi works automatically. For anywhere else, expose port 8000 with a tunnel and paste its public URL here, for example
+        <code>cloudflared tunnel --url http://localhost:8000</code> (gives an https URL) or a Tailscale / VPS / router port-forward address.</p>
+      <div class="pr-row">
+        <input id="prPublic" class="fm-input" placeholder="https://your-tunnel.example.com  (optional)">
+        <button class="fm-btn fm-primary" id="prSave">Save</button>
+      </div>
+      <p>Phones try these in order and switch automatically when they change networks:</p>
+      <div id="prUrls" class="pr-mono"></div>
+    </div>
+
+    <div class="pr-card">
+      <h2>Cloudflare relay (free, permanent address)</h2>
+      <p>Laptop and phones both connect out to your Cloudflare Worker, so it works from any network on either side.
+        Status: <b id="prCloudState">—</b> <span id="prCloudInfo" class="fm-muted"></span></p>
+      <div class="pr-row">
+        <input id="prCloudUrl" class="fm-input" placeholder="https://acc-relay.<your-subdomain>.workers.dev">
+        <input id="prCloudKey" class="fm-input" type="password" placeholder="Hub key (leave empty to keep the saved one)" autocomplete="off">
+        <button class="fm-btn fm-primary" id="prCloudSave">Save</button>
+      </div>
+    </div>
+
+    <div class="pr-card">
+      <h2>2 · Pair a phone</h2>
+      <div class="pr-grid">
+        <div id="prQr">QR code</div>
+        <div>
+          <p><b>Phone connected by USB:</b> press <em>Pair via USB</em> next to it below — done.</p>
+          <p><b>Phone somewhere else:</b> install the Operator Companion app, then scan this QR code with the phone camera
+            (or open the link on the phone). The app stores the addresses and the access token and stays connected in the background.</p>
+          <div class="pr-row"><button class="fm-btn" id="prCopyLink">Copy pairing link</button><button class="fm-btn" id="prShowTok" title="Address and token to type into the phone app if scanning does not work">Show pairing details</button>
+            <button class="fm-btn fm-danger" id="prRotate" title="Disconnects every remote phone and browser; they must be paired again">Change tokens</button></div>
+          <div id="prTok" class="pr-mono" hidden></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pr-card">
+      <h2>3 · Phones</h2>
+      <table class="fm-table"><thead><tr><th>Phone</th><th>Android</th><th>USB / ADB</th><th>Remote link</th><th></th></tr></thead><tbody id="prDevices"></tbody></table>
+      <div id="prRefused"></div>
+    </div>
+  </div>
+  <div id="fmToasts" class="fm-toasts"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script>
+  (() => {
+    const $ = (id) => document.getElementById(id);
+    let info = null, lastLink = "";
+    const toast = (m, err) => { const t = document.createElement("div"); t.className = "fm-toast" + (err ? " err" : ""); t.textContent = m; $("fmToasts").append(t); setTimeout(() => t.remove(), 4000); };
+    async function api(method, url, body) {
+      const r = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : `HTTP ${r.status}`);
+      return d;
+    }
+    function render() {
+      if (document.activeElement !== $("prPublic")) $("prPublic").value = info.public_url || "";
+      $("prUrls").replaceChildren(...(info.ws_urls.length ? info.ws_urls : ["(no reachable address found)"]).map((u, i) => {
+        const d = document.createElement("div"); d.textContent = `${i + 1}. ${u}`; return d;
+      }));
+      if (info.pairing_link !== lastLink) {
+        lastLink = info.pairing_link;
+        $("prQr").replaceChildren();
+        if (window.QRCode) new QRCode($("prQr"), { text: lastLink, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.L });
+        else $("prQr").textContent = "QR library unavailable offline — use “Copy pairing link”.";
+      }
+      $("prTok").textContent = `For typing into the phone app:  address ${(info.ws_urls || []).filter((u) => u.startsWith("wss://"))[0] || info.ws_urls[0] || "-"}  ·  token ${info.device_token}\nDashboard token (open this page from another computer with ?token=…): ${info.token}`;
+      $("prTok").style.whiteSpace = "pre-wrap";
+      const c = info.cloud || {};
+      $("prCloudState").textContent = !c.url ? "not set up" : ({ connected: "✓ connected", connecting: "connecting…", error: "error", off: "off" }[c.state] || c.state);
+      $("prCloudState").className = c.state === "connected" ? "pr-ok" : "pr-bad";
+      $("prCloudInfo").textContent = c.state === "connected" ? `· ${c.phones} phone(s) via relay` : (c.error ? `· ${c.error}` : "");
+      if (document.activeElement !== $("prCloudUrl")) $("prCloudUrl").value = (c.url || "").replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+      // Phones the laptop turns away: their app was reinstalled (new install = new secret). Owner approves here.
+      $("prRefused").replaceChildren(...(info.refused || []).map((r) => {
+        const row = document.createElement("div");
+        row.className = "pr-bad"; row.style.cssText = "display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap";
+        const m = /^android_(.+)_([0-9a-f]{8})[0-9a-f]*$/.exec(r.relay_id);
+        const label = m ? `${m[1].replace(/_/g, " ").toUpperCase()} (${m[2]})` : r.relay_id;
+        const t = document.createElement("span");
+        t.textContent = `🔒 ${label} is trying to connect but was refused: the app was reinstalled on it.`;
+        const b = document.createElement("button"); b.className = "fm-btn fm-primary"; b.textContent = "Allow";
+        b.title = "Let this phone register again (only for your own phone)";
+        b.onclick = async () => { if (!confirm(`Allow ${label} to connect again? Only do this for your own phone.`)) return;
+          try { info = await api("POST", `/api/remote/forget/${encodeURIComponent(r.relay_id)}`); render();
+                toast("Allowed — the phone connects within a few minutes, or right away when its app is opened."); }
+          catch (e) { toast(e.message, true); } };
+        row.append(t, b);
+        return row;
+      }));
+      $("prDevices").replaceChildren(...info.devices.map((d) => {
+        const tr = document.createElement("tr");
+        const cell = (txt, cls) => { const td = document.createElement("td"); td.textContent = txt; if (cls) td.className = cls; tr.append(td); return td; };
+        cell(d.name); cell(d.android_version);
+        cell(d.usb ? "✓ connected" : "—", d.usb ? "pr-ok" : "pr-bad");
+        cell(d.relay_online ? "✓ online" : "not connected", d.relay_online ? "pr-ok" : "pr-bad");
+        const act = cell("");
+        if (d.usb) {
+          const b = document.createElement("button"); b.className = "fm-btn"; b.textContent = d.relay_online ? "Re-pair via USB" : "Pair via USB";
+          b.onclick = async () => { try { await api("POST", `/api/remote/provision/${encodeURIComponent(d.id)}`); toast("Sent to the phone — the companion app opens and connects."); } catch (e) { toast(e.message, true); } };
+          act.append(b);
+        }
+        if (d.relay_id && !d.relay_online) {
+          const r = document.createElement("button"); r.className = "fm-btn"; r.textContent = "Reset";
+          r.title = "Use if the app was reinstalled and the laptop refuses this phone"; r.style.marginLeft = "6px";
+          r.onclick = async () => { if (!confirm(`Allow "${d.name}" to register again? Only do this for your own phone.`)) return;
+            try { info = await api("POST", `/api/remote/forget/${encodeURIComponent(d.relay_id)}`); render(); toast("Reset — the phone can connect again."); } catch (e) { toast(e.message, true); } };
+          act.append(r);
+        }
+        const pm = document.createElement("a"); pm.className = "fm-btn"; pm.textContent = "🔐 Permissions"; pm.href = "/permissions.html"; pm.target = "_blank"; pm.style.marginLeft = "6px";
+        act.append(pm);
+        const f = document.createElement("a"); f.className = "fm-btn"; f.textContent = "Files"; f.href = `/files.html?device=${encodeURIComponent(d.id)}`; f.target = "_blank"; f.style.marginLeft = "6px";
+        act.append(f);
+        return tr;
+      }));
+    }
+    async function load() { try { info = await api("GET", "/api/remote/pairing"); render(); } catch (e) { toast(e.message, true); } }
+    $("prSave").onclick = async () => { try { info = await api("POST", "/api/remote/config", { public_url: $("prPublic").value }); render(); toast("Saved — pair phones again so they learn the new address."); } catch (e) { toast(e.message, true); } };
+    $("prCloudSave").onclick = async () => {
+      const body = { url: $("prCloudUrl").value };
+      if ($("prCloudKey").value) body.hub_key = $("prCloudKey").value;
+      try { info = await api("POST", "/api/remote/cloud", body); $("prCloudKey").value = ""; render(); toast("Saved — re-pair phones so they learn the relay address."); }
+      catch (e) { toast(e.message, true); }
+    };
+    $("prCopyLink").onclick = () => navigator.clipboard.writeText(lastLink).then(() => toast("Pairing link copied"), () => toast(lastLink));
+    $("prShowTok").onclick = () => { $("prTok").hidden = !$("prTok").hidden; };
+    $("prRotate").onclick = async () => {
+      if (!confirm("Change the tokens? Every remote phone and browser is disconnected now and must be paired again.")) return;
+      try { info = await api("POST", "/api/remote/token/rotate"); render(); toast("Token changed"); } catch (e) { toast(e.message, true); }
+    };
+    load(); setInterval(load, 4000);
+  })();
+  </script>
+</body>
+</html>

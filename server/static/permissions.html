@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phone Permissions</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css?v=1.8.9">
+  <link rel="stylesheet" href="/css/files.css?v=1.8.9">
+  <style>
+    .pm-main { padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); align-items: start; }
+    .pm-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md, 10px); padding: 14px; min-width: 0; }
+    .pm-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+    .pm-name { font-weight: 600; font-size: 15px; }
+    .pm-badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border-color); color: var(--text-secondary); }
+    .pm-sub { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; }
+    .pm-sum { font-size: 12.5px; margin-bottom: 8px; }
+    .pm-row { display: grid; grid-template-columns: 26px 1fr; gap: 2px 8px; padding: 8px 0; border-top: 1px solid var(--border-color); }
+    .pm-icon { font-size: 16px; line-height: 20px; }
+    .pm-title { font-weight: 600; font-size: 13px; }
+    .pm-unlocks { font-size: 12px; color: var(--text-secondary); }
+    .pm-fix { grid-column: 2; font-size: 12px; color: #fcd34d; }
+    .pm-note { grid-column: 2; font-size: 12px; color: #fda4af; }
+    .pm-msg { color: #fda4af; font-size: 13px; padding: 6px 0; }
+    .pm-empty { padding: 32px; color: var(--text-secondary); }
+  </style>
+</head>
+<body class="fm-body">
+  <header class="fm-header">
+    <a class="fm-brand" href="/">⚡ Control Centre</a>
+    <span class="fm-sep">/</span>
+    <span class="fm-title">Phone Permissions</span>
+    <span class="fm-gap"></span>
+    <span class="fm-muted">Read-only. Fix a ❌ on the phone itself — the steps are shown under it.</span>
+    <button class="fm-btn fm-primary" id="pmRefresh">⟳ Check again</button>
+    <a class="fm-btn" href="/files.html">📁 Files</a>
+  </header>
+  <main id="pmMain" class="pm-main"><div class="pm-empty">Asking the phones…</div></main>
+  <div id="fmToasts" class="fm-toasts"></div>
+  <script src="/js/permissions.js?v=1.8.9"></script>
+</body>
+</html>

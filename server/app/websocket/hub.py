@@ -320,6 +320,26 @@ class WebSocketHub:
                 dur = int(payload.get("duration_ms", 300))
                 await self.input_router.swipe(dev.id, x1, y1, x2, y2, dur)
 
+        elif msg_type == "INPUT_POINTER":
+            # live finger from the dashboard canvas: down / move / up as they happen
+            dev = self.device_manager.get_device(device_id)
+            action = payload.get("action")
+            if dev and action in ("down", "move", "up"):
+                try:
+                    x, y = int(payload.get("x", 0)), int(payload.get("y", 0))
+                except (TypeError, ValueError):
+                    return
+                await self.input_router.pointer(dev.id, action, x, y)
+
+        elif msg_type == "INPUT_SCROLL":
+            dev = self.device_manager.get_device(device_id)
+            if dev:
+                try:
+                    x, y, v = int(payload.get("x", 0)), int(payload.get("y", 0)), float(payload.get("v", 0))
+                except (TypeError, ValueError):
+                    return
+                await self.input_router.scroll(dev.id, x, y, v)
+
         elif msg_type == "INPUT_KEY":
             dev = self.device_manager.get_device(device_id)
             if dev:

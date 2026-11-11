@@ -37,11 +37,27 @@ class H264Player {
     return typeof window.VideoDecoder === "function" && window.isSecureContext === true;
   }
 
-  constructor(canvas, { onFirstFrame, onStuck } = {}) {
+  // Can this browser really decode the phone's H.264? (VideoDecoder existing is not enough: Linux without
+  // VA-API, VMs and some Chromium builds have it but can't decode High profile.)
+  static probe() {
+    if (!H264Player.supported()) return Promise.resolve(false);
+    if (!H264Player._probe) {
+      const tries = ["avc1.640028", "avc1.4d0028", "avc1.42e01f"].map((codec) =>
+        VideoDecoder.isConfigSupported({ codec, optimizeForLatency: true }).then((r) => !!r.supported, () => false));
+      H264Player._probe = Promise.all(tries).then((r) => r[0] || r[1] || r[2]);
+    }
+    return H264Player._probe;
+  }
+
+  constructor(canvas, { onFirstFrame, onStuck, onUnsupported } = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.onFirstFrame = onFirstFrame;
     this.onStuck = onStuck;          // decoder far behind / errored: ask the server to resync this viewer
+    this.onUnsupported = onUnsupported;  // keeps failing: let the page fall back to snapshots
+    this._errors = [];
+    this._lastStuck = 0;
+
     this.decoder = null;
     this.config = null;
     this.needKey = true;
@@ -55,13 +71,26 @@ class H264Player {
   push(pkt) {
     if (pkt.kind === MEDIA_KIND.CONFIG) return this._configure(pkt.payload);
     if (pkt.kind !== MEDIA_KIND.KEY && pkt.kind !== MEDIA_KIND.DELTA) return;
-    if (!this.decoder || this.decoder.state !== "configured") return;
+    if (!this.decoder || this.decoder.state !== "configured") {
+      // frames but no config (joined mid-stream / after a reset): ask for config + current group (rate-limited)
+      this._stuck();
+      return;
+    }
     const isKey = pkt.kind === MEDIA_KIND.KEY;
     if (this.needKey && !isKey) { this.dropped++; return; }
-    if (this.decoder.decodeQueueSize > 60) {        // hopelessly behind: start over from the server's cache
-      this.dropped++;
-      this._restart();
-      return;
+    // A resync replays a whole picture group at once, so a short backlog is normal; only a backlog that
+    // lasts a full second means this browser can't keep up → start over from the server's cache.
+    const now = performance.now();
+    if (this.decoder.decodeQueueSize > 10) {
+      if (!this._backlogSince) this._backlogSince = now;
+      if (now - this._backlogSince > 1000) {
+        this._backlogSince = 0;
+        this.dropped++;
+        this._restart();
+        return;
+      }
+    } else {
+      this._backlogSince = 0;
     }
     let data = pkt.payload;
     if (isKey && this.config) {                     // key frames carry SPS/PPS in front (Annex-B)
@@ -74,7 +103,7 @@ class H264Player {
       if (isKey) this.needKey = false;
     } catch (e) {
       console.warn("[Mirror] decode failed:", e);
-      this._restart();
+      this._failed();
     }
   }
 
@@ -85,15 +114,17 @@ class H264Player {
     if (!this.decoder || this.decoder.state === "closed") {
       this.decoder = new VideoDecoder({
         output: (frame) => this._draw(frame),
-        error: (e) => { console.warn("[Mirror] decoder error:", e); this._restart(); },
+        error: (e) => { console.warn("[Mirror] decoder error:", e); this._failed(); },
       });
     }
     try {
-      this.decoder.configure({ codec: avcCodecString(sps), optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
-    } catch (e) {
-      // some browsers reject the hardware hint: let them pick
+      // no hardware-only hint: the browser uses the hardware decoder when it has one, software otherwise
       this.decoder.configure({ codec: avcCodecString(sps), optimizeForLatency: true });
+    } catch (e) {
+      this._failed();
+      return;
     }
+
     this.needKey = true;
   }
 
@@ -103,8 +134,11 @@ class H264Player {
       this.canvas.width = w;
       this.canvas.height = h;
     }
-    this.ctx.drawImage(frame, 0, 0, w, h);
-    frame.close();
+    try {
+      this.ctx.drawImage(frame, 0, 0, w, h);
+    } finally {
+      frame.close();                                 // a leaked frame stalls the decoder's small output pool
+    }
     this.frames++;
     this._fpsFrames++;
     const now = performance.now();
@@ -116,9 +150,28 @@ class H264Player {
     if (this.frames === 1 && this.onFirstFrame) this.onFirstFrame();
   }
 
+  _failed() {
+    const now = performance.now();
+    this._errors = this._errors.filter((t) => now - t < 10000);
+    this._errors.push(now);
+    if (this._errors.length >= 3 && this.onUnsupported) {   // 3 failures in 10 s: this browser can't do it
+      this.close();
+      this.onUnsupported();
+      return;
+    }
+    this._restart();
+  }
+
+  _stuck() {
+    const now = performance.now();
+    if (now - this._lastStuck < 1000) return;       // at most one resync request a second
+    this._lastStuck = now;
+    if (this.onStuck) this.onStuck();
+  }
+
   _restart() {
     this.close();
-    if (this.onStuck) this.onStuck();
+    this._stuck();
   }
 
   close() {

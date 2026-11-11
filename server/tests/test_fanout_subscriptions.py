@@ -190,3 +190,27 @@ class TestHubSubscriptions(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPointerMessages(unittest.IsolatedAsyncioTestCase):
+    async def test_pointer_and_scroll_routed(self):
+        dev = SimpleNamespace(id="d", serial="s", name="P", transport="adb", status="online", relay_id="")
+        dm = SimpleNamespace(add_listener=lambda fn: None, get_device=lambda i: dev, get_all_devices=lambda: [dev])
+        hub = WebSocketHub(dm, Adb(), SimpleNamespace(add_listener=lambda fn: None))
+        calls = []
+
+        async def pointer(device_id, action, x, y):
+            calls.append(("p", action, x, y))
+
+        async def scroll(device_id, x, y, v, h=0.0):
+            calls.append(("s", x, y, v))
+        hub.input_router = SimpleNamespace(pointer=pointer, scroll=scroll)
+        ws = WS()
+        for action in ("down", "move", "up"):
+            await hub._process_dashboard_message(ws, {"type": "INPUT_POINTER", "device_id": "d",
+                                                      "payload": {"action": action, "x": 10, "y": 20}})
+        await hub._process_dashboard_message(ws, {"type": "INPUT_SCROLL", "device_id": "d",
+                                                  "payload": {"x": 5, "y": 6, "v": -0.5}})
+        await hub._process_dashboard_message(ws, {"type": "INPUT_POINTER", "device_id": "d",
+                                                  "payload": {"action": "explode", "x": 1, "y": 1}})
+        self.assertEqual(calls, [("p", "down", 10, 20), ("p", "move", 10, 20), ("p", "up", 10, 20), ("s", 5, 6, -0.5)])

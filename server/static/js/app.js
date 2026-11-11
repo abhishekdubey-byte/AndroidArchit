@@ -12,6 +12,22 @@ class ControlCentreApp {
     this.ctx = this.canvas ? this.canvas.getContext("2d") : null;
     this.coordBadge = document.getElementById("coordBadge");
     this.debugMirror = new URLSearchParams(window.location.search).has("debug");  // ?debug=1 shows mirror fps
+    document.addEventListener("visibilitychange", () => {
+      clearTimeout(this.hiddenTimer);
+      if (document.hidden) {
+        // hidden for a while: stop streaming (keeps "mirroring on"), resume when the tab is visible again
+        this.hiddenTimer = setTimeout(() => {
+          if (this.mirrorOn && this.activeDevice && this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: "STOP_SCREEN_STREAM", device_id: this.activeDevice.id }));
+            this.stopH264();
+            this.pausedHidden = true;
+          }
+        }, 8000);
+      } else if (this.pausedHidden) {
+        this.pausedHidden = false;
+        if (this.mirrorOn) this.setMirroring(true);
+      }
+    });
     this.img = new Image();
     this.isDragging = false;
     this.mirrorOn = false; // off by default: streaming the screen drains the phone's battery
@@ -90,7 +106,13 @@ class ControlCentreApp {
     this.ws.onopen = () => {
       console.log("[WS] Connected to Central Server");
       // Tell the server whether this browser can decode H.264 (WebCodecs needs localhost/https)
-      this.ws.send(JSON.stringify({ type: "CLIENT_CAPS", payload: { h264: window.H264Player ? H264Player.supported() : false } }));
+      // Tell the server whether this browser can decode H.264 (probed with WebCodecs; needs localhost/https)
+      const probe = window.H264Player ? H264Player.probe() : Promise.resolve(false);
+      probe.then((ok) => {
+        this.h264Capable = ok && !this.h264Broken;
+        if (this.ws && this.ws.readyState === WebSocket.OPEN)
+          this.ws.send(JSON.stringify({ type: "CLIENT_CAPS", payload: { h264: this.h264Capable } }));
+      });
       document.getElementById("connectionStatus").innerText = "Server Online";
       document.getElementById("connectionDot").style.background = "#10b981";
     };
@@ -530,6 +552,15 @@ class ControlCentreApp {
       this.h264 = new H264Player(this.canvas, {
         onStuck: () => this.ws && this.ws.readyState === WebSocket.OPEN &&
           this.ws.send(JSON.stringify({ type: "MIRROR_RESYNC", device_id: this.activeDevice.id })),
+        onUnsupported: () => {
+          // this browser can't decode the phone's stream after all: switch this tab to snapshots
+          this.h264Broken = true;
+          this.h264Capable = false;
+          this.stopH264();
+          if (this.ws && this.ws.readyState === WebSocket.OPEN)
+            this.ws.send(JSON.stringify({ type: "CLIENT_CAPS", payload: { h264: false } }));
+          this.showToast("This browser can't decode the fast mirror; using slower snapshots.", "error");
+        },
       });
     }
     if (this.img) this.img.onload = null;   // a late JPEG must not paint over the live picture
@@ -918,54 +949,61 @@ class ControlCentreApp {
   setupEventListeners() {
     // 1. Canvas Mouse Interactions & Exact Coordinate Mapping
     if (this.canvas) {
+      // Live finger: down / move / up go to the phone as they happen (moves coalesced to one per frame),
+      // so dragging lists and maps feels direct; the wheel scrolls.
+      const sendPointer = (action, coords) => {
+        if (!this.activeDevice || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ type: "INPUT_POINTER", device_id: this.activeDevice.id,
+                                      payload: { action, x: coords.x, y: coords.y } }));
+      };
+      let pendingMove = null;
+      const flushMove = () => {
+        if (pendingMove && this.isDragging) sendPointer("move", pendingMove);
+        pendingMove = null;
+      };
+
       this.canvas.addEventListener("mousemove", (e) => {
         if (!this.activeDevice) return;
         const coords = this.getCanvasDeviceCoordinates(e);
-        if (this.coordBadge) {
+        if (this.coordBadge && !this.debugMirror) {
           this.coordBadge.innerText = `X: ${coords.x}, Y: ${coords.y}`;
+        }
+        if (this.isDragging) {
+          if (!pendingMove) requestAnimationFrame(flushMove);
+          pendingMove = coords;
         }
       });
 
       this.canvas.addEventListener("mousedown", (e) => {
+        if (e.button !== 0 || !this.activeDevice) return;
         this.isDragging = true;
         const coords = this.getCanvasDeviceCoordinates(e);
         this.dragStart = { x: coords.x, y: coords.y, time: Date.now() };
         this.showTouchRipple(e.clientX, e.clientY);
+        sendPointer("down", coords);
       });
 
-      this.canvas.addEventListener("mouseup", (e) => {
+      const release = (e) => {
         if (!this.isDragging || !this.activeDevice) return;
+        flushMove();
         this.isDragging = false;
-        const coords = this.getCanvasDeviceCoordinates(e);
-        const duration = Date.now() - this.dragStart.time;
-        const dist = Math.hypot(coords.x - this.dragStart.x, coords.y - this.dragStart.y);
+        sendPointer("up", this.getCanvasDeviceCoordinates(e));
+      };
+      this.canvas.addEventListener("mouseup", release);
+      this.canvas.addEventListener("mouseleave", release);   // never leave a finger pressed on the phone
 
-        if (dist > 30) {
-          // Swipe / Drag gesture
-          this.ws.send(JSON.stringify({
-            type: "INPUT_SWIPE",
-            device_id: this.activeDevice.id,
-            payload: {
-              x1: this.dragStart.x,
-              y1: this.dragStart.y,
-              x2: coords.x,
-              y2: coords.y,
-              duration_ms: Math.min(600, Math.max(150, duration))
-            }
-          }));
-        } else {
-          // Tap gesture
-          this.ws.send(JSON.stringify({
-            type: "INPUT_TOUCH",
-            device_id: this.activeDevice.id,
-            payload: {
-              action: "tap",
-              x: coords.x,
-              y: coords.y
-            }
-          }));
-        }
-      });
+      let lastWheel = 0;
+      this.canvas.addEventListener("wheel", (e) => {
+        if (!this.activeDevice || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        e.preventDefault();
+        const now = performance.now();
+        if (now - lastWheel < 30) return;                    // ~30 scroll events/s is plenty
+        lastWheel = now;
+        const coords = this.getCanvasDeviceCoordinates(e);
+        const v = Math.max(-1, Math.min(1, -e.deltaY / 100)); // wheel down = content scrolls down
+        if (v) this.ws.send(JSON.stringify({ type: "INPUT_SCROLL", device_id: this.activeDevice.id,
+                                             payload: { x: coords.x, y: coords.y, v } }));
+      }, { passive: false });
     }
 
     // 2. Hardware Navigation Buttons

@@ -140,6 +140,7 @@ class TestHubMirror(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(h._mirror_failed("d", "device offline"))
         self.assertTrue(h._mirror_failed("d", "device offline"))
         self.assertEqual(h._fast_mirror_retry["d"], 6.0)
+        self.assertTrue(h._mirror_failed("d", "the mirror server did not start on the phone"))   # cable pulled
         self.assertFalse(h._mirror_failed("d", "no encoder"))
         self.assertEqual(h._fast_mirror_retry["d"], 60.0)
 

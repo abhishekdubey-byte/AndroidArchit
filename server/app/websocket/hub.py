@@ -1058,7 +1058,9 @@ class WebSocketHub:
         return ok
 
     # adb errors of a phone that was plugged in a moment ago (not ready yet), not of a phone that can't mirror
-    _ADB_NOT_READY = ("not found", "offline", "unauthorized", "no devices", "failed to get feature", "device still")
+    # (also a start cut short by the cable being pulled; a phone that really can't mirror backs off to 60 s anyway)
+    _ADB_NOT_READY = ("not found", "offline", "unauthorized", "no devices", "failed to get feature", "device still",
+                      "did not start", "connection reset", "closed")
 
     def _mirror_failed(self, device_id: str, reason: str) -> bool:
         """Remember a fast-mirror failure. A not-ready adb is retried after 3 s (doubling to 60 s); anything else

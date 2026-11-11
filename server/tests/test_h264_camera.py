@@ -167,23 +167,19 @@ class TestRecordingStartedMidStream(unittest.IsolatedAsyncioTestCase):
         await hub.handle_device_binary(phone, device_frame({"type": "CAMERA_PKT", "k": 2, "pts": 1}, b"K"))
         ws = FakeWS()
         hub.dashboard_clients.add(ws)
-        got = []
+        made = []
 
         class Rec:
-            def __init__(self, *a, **k):
-                pass
-
-            def submit_video(self, kind, pts, data):
-                got.append((kind, data))
-        orig = hub_module.H264Recorder
-        hub_module.H264Recorder = Rec
+            def __init__(self, *a, **kw):
+                made.append(kw)
+        orig = hub_module.AutoRecorder
+        hub_module.AutoRecorder = Rec
         try:
             await hub._process_dashboard_message(ws, {"type": "START_CAMERA_SAVE", "device_id": "xiaomi"})
         finally:
-            hub_module.H264Recorder = orig
-        self.assertEqual(got[0], (1, b"SPSPPS"))          # the recording can start at the next key frame
+            hub_module.AutoRecorder = orig
+        self.assertEqual(made[0]["config"], b"SPSPPS")       # the recording can start at the next key frame
         self.assertIn("CAMERA_KEYFRAME", [m["type"] for m in phone.json])
-
 
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
 class TestRecordingRotation(unittest.TestCase):

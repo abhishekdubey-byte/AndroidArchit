@@ -774,6 +774,7 @@ class ControlCentreApp {
 
   renderLiveFrame(payload) {
     if (!this.live || !this.live.on || !payload || !payload.data_base64) return;
+    if (this.camPlayer) this.stopCameraPlayer();   // the phone switched this camera to JPEG (a viewer without H.264)
     const img = document.getElementById("liveImg");
     if (img) img.src = "data:image/jpeg;base64," + payload.data_base64;
     this.setLiveBadge(payload.lens === "front" ? "front" : "rear");
@@ -794,7 +795,7 @@ class ControlCentreApp {
         if (this.camPlayer) this.camPlayer.setRotation(payload.rotation);
       }
       if (payload.lens) this.setLiveBadge(payload.lens === "front" ? "front" : "rear");
-      if (payload.throttled) this.setCaptureStatus("ok", "Phone is warm: live camera eased to 15 fps");
+      if (payload.throttled) this.setCaptureStatus("ok", "Phone is warm: live camera quality eased to cool it down");
     }
     if (payload.error) {
       this.setCaptureStatus("err", "Live preview: " + payload.error);

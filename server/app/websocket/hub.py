@@ -9,7 +9,9 @@ from fastapi import WebSocket, WebSocketDisconnect
 from ..config import (DOWNLOADS_DIR, FAST_MIRROR, MIRROR_BITRATE, MIRROR_FPS, MIRROR_MAX_SIZE, device_capture_dir,
                       download_url)
 from ..services.scrcpy_session import MirrorUnavailable, ScrcpySession, VideoPacket
-from ..services.h264_recorder import H264Recorder
+from ..services.h264_recorder import AutoRecorder, H264Recorder
+
+MAX_CAMERA_PACKET = 2 * 1024 * 1024
 from .media_fanout import MediaFanout
 from ..services.input_router import InputRouter
 from ..services.device_manager import DeviceManager
@@ -66,6 +68,7 @@ class WebSocketHub:
         self._cam_codec: Dict[str, str] = {}                  # device_id -> "h264" / "jpeg" (live camera format)
         self._cam_config: Dict[str, bytes] = {}               # device_id -> latest H.264 SPS/PPS from the phone
         self._cam_rotation: Dict[str, int] = {}               # device_id -> camera sensor rotation (degrees cw)
+        self._cam_state: Dict[str, dict] = {}                 # device_id -> last state of a live camera (for newcomers)
         self.input_router = InputRouter(adb_bridge, device_manager, self.mirror_sessions)
         self.pb = None  # PowerBoosters gateway, attached in main.py
 
@@ -235,17 +238,23 @@ class WebSocketHub:
             dev = self.device_manager.get_device(device_id)
             comp_sock = self._get_companion_socket(dev)
             cam_stream = f"{dev.id if dev else device_id}#cam"
+            did = dev.id if dev else device_id
             if msg_type == "START_CAMERA_STREAM":
                 self.fanout.subscribe(websocket, cam_stream)
+                state = self._cam_state.setdefault(did, {})   # marks the camera as started (stopped if every viewer leaves)
+                if state:                                # camera already live: tell this newcomer how to draw it
+                    await websocket.send_json({"type": "CAMERA_STREAM_STATE", "device_id": did, "payload": state})
             elif msg_type == "STOP_CAMERA_STREAM":
                 self.fanout.unsubscribe(websocket, cam_stream)
                 if self.fanout.subscribers(cam_stream):
                     return                               # another dashboard is still watching this camera
+                self._forget_camera(did)
             if comp_sock:
                 cam_payload = {"lens": lens}
                 if msg_type == "START_CAMERA_STREAM":
-                    # hardware H.264 only for browsers that can decode it; others keep the JPEG preview
-                    cam_payload["codec"] = "h264" if self.fanout.wants_h264(websocket) else "jpeg"
+                    # H.264 only when every viewer can decode it (one stream per camera); otherwise JPEG for all
+                    everyone_h264 = self.fanout.wants_h264(websocket) and self.fanout.jpeg_viewers(cam_stream) == 0
+                    cam_payload["codec"] = "h264" if everyone_h264 else "jpeg"
                 try:
                     await comp_sock.send_json({"type": msg_type, "payload": cam_payload})
                 except Exception as e:
@@ -262,20 +271,17 @@ class WebSocketHub:
                                            "payload": {"saving": False, "error": "ffmpeg is not installed on the laptop"}})
             elif device_id and device_id not in self.cam_recorders:
                 folder = device_capture_dir(dev or device_id)
-                if self._cam_codec.get(device_id) == "h264":   # copy the phone's H.264: stop = close the file
-                    rec = H264Recorder(dev.name if dev else device_id, folder=folder,
-                                       rotation=self._cam_rotation.get(device_id, 0))
-                    self.cam_recorders[device_id] = rec
-                    if device_id in self._cam_config:          # the stream's config came before this recording
-                        rec.submit_video(1, 0, self._cam_config[device_id])
-                    sock = self._get_companion_socket(dev) if dev else None
-                    if sock:                                   # start at a key frame now, not up to 2 s later
-                        try:
-                            await sock.send_json({"type": "CAMERA_KEYFRAME"})
-                        except Exception:
-                            pass
-                else:
-                    self.cam_recorders[device_id] = CamRecorder(dev.name if dev else device_id, folder=folder)
+                # picks H.264 copy or JPEG re-encode from the first frame (Save may come before it) and starts a
+                # new upright file when the lens changes
+                self.cam_recorders[device_id] = AutoRecorder(
+                    dev.name if dev else device_id, folder=folder, config=self._cam_config.get(device_id),
+                    rotation=self._cam_rotation.get(device_id, 0))
+                sock = self._get_companion_socket(dev) if dev else None
+                if sock and self._cam_codec.get(device_id) == "h264":   # start at a key frame now, not up to 2 s later
+                    try:
+                        await sock.send_json({"type": "CAMERA_KEYFRAME"})
+                    except Exception:
+                        pass
                 await self.broadcast_to_dashboards({"type": "CAMERA_SAVE_STATE", "device_id": device_id,
                                                     "payload": {"saving": True}})
 
@@ -287,9 +293,17 @@ class WebSocketHub:
             _d = self._device_for_companion(device_id)
             did = _d.id if _d else device_id
             rec = self.cam_recorders.get(did)
+            if msg_type == "CAMERA_STREAM_STATE":
+                if payload.get("active") is False:
+                    self._forget_camera(did)
+                else:
+                    self._cam_state[did] = {**self._cam_state.get(did, {}),
+                                            **{k: v for k, v in payload.items() if k != "error"}}
             if msg_type == "CAMERA_STREAM_STATE" and payload.get("codec") == "h264" and "rotation" in payload:
                 try:
                     self._cam_rotation[did] = int(payload["rotation"])
+                    if rec is not None and hasattr(rec, "set_rotation"):
+                        rec.set_rotation(self._cam_rotation[did])   # lens switch: continue in a new upright file
                 except (TypeError, ValueError):
                     pass
             if msg_type == "CAMERA_FRAME":
@@ -861,9 +875,13 @@ class WebSocketHub:
             return True                                     # not a registered phone: drop
         dev = self._device_for_companion(me.relay_id)
         did = dev.id if dev else me.relay_id
+        if len(payload) > MAX_CAMERA_PACKET:
+            return True                                      # a 720p key frame is ~200 KB: anything this big is bogus
         try:
             kind, pts = int(header.get("k", 3)), int(header.get("pts", 0))
-        except (TypeError, ValueError):
+            if kind not in (1, 2, 3) or not 0 <= pts < 2 ** 62:
+                return True
+        except (TypeError, ValueError, OverflowError):
             return True
         self._cam_codec[did] = "h264"
         if kind == 1:
@@ -943,6 +961,22 @@ class WebSocketHub:
         self.fanout.remove(websocket)
         for device_id in list(self.active_streaming_devices) + list(self.mirror_sessions):
             await self._stop_unwatched(device_id)
+        for did in list(self._cam_state):                   # a closed tab must not leave the phone's camera running
+            if self.fanout.subscribers(f"{did}#cam") == 0:
+                dev = self.device_manager.get_device(did)
+                sock = self._get_companion_socket(dev) if dev else None
+                if sock:
+                    try:
+                        await sock.send_json({"type": "STOP_CAMERA_STREAM", "payload": {}})
+                    except Exception:
+                        pass
+                self._forget_camera(did)
+
+    def _forget_camera(self, did: str) -> None:
+        """The camera stopped: no stale picture or config may be replayed to the next session's viewers."""
+        self._cam_state.pop(did, None)
+        self._cam_config.pop(did, None)
+        self.fanout.forget_device(f"{did}#cam")
 
     async def _stop_unwatched(self, device_id: str) -> None:
         if self.fanout.subscribers(device_id) == 0:
@@ -1004,9 +1038,10 @@ class WebSocketHub:
 
     async def _close_recording(self, device_id: str, rec):
         path = await asyncio.get_event_loop().run_in_executor(None, rec.close)
+        parts = [display_name(p) for p in (getattr(rec, "paths", None) or ([path] if path else []))]
         await self.broadcast_to_dashboards({"type": "CAMERA_SAVE_STATE", "device_id": device_id,
                                             "payload": {"saving": False, "path": path,
-                                                        "name": display_name(path)}})
+                                                        "name": display_name(path), "parts": parts}})
 
     async def _broadcast_game(self):
         msg = {"type": "GAME_STATE", "payload": self.game.snapshot()}

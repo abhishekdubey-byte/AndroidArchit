@@ -223,13 +223,21 @@ class H264Recorder:
 class AutoRecorder:
     """The recorder a dashboard's Save button gets: picks H.264 (copy) or JPEG (re-encode) from the first frame,
     so pressing Save before the stream's first frame still records; a lens switch (new rotation) closes the current
-    file and continues in a new, upright one."""
+    file and continues in a new, upright one.
+
+    H.264 goes to `AvRecorder` (phone timestamps, AAC from app 1.9.29+); a phone that still sends 16 kHz PCM
+    (`legacy_audio`) gets the older arrival-time `H264Recorder` so its sound is not lost."""
 
     def __init__(self, device_name: str, folder: Optional[Path] = None, config: Optional[bytes] = None,
-                 rotation: int = 0, h264_factory=H264Recorder, jpeg_factory=CamRecorder):
+                 rotation: int = 0, h264_factory=None, jpeg_factory=CamRecorder,
+                 audio_config: Optional[bytes] = None, legacy_audio: bool = False, legacy_factory=H264Recorder):
         self.device_name, self.folder = device_name, folder
         self.config, self.rotation = config, int(rotation or 0) % 360
-        self.h264_factory, self.jpeg_factory = h264_factory, jpeg_factory
+        self.audio_config, self.legacy_audio = audio_config, legacy_audio
+        if h264_factory is None:
+            from .av_recorder import AvRecorder
+            h264_factory = AvRecorder
+        self.h264_factory, self.jpeg_factory, self.legacy_factory = h264_factory, jpeg_factory, legacy_factory
         self.inner = None
         self.kind: Optional[str] = None
         self._video_frames = 0
@@ -240,8 +248,13 @@ class AutoRecorder:
 
     def _start(self, kind: str):
         self.kind = kind
-        if kind == "h264":
-            self.inner = self.h264_factory(self.device_name, folder=self.folder, rotation=self.rotation)
+        if kind == "h264" and self.legacy_audio:
+            self.inner = self.legacy_factory(self.device_name, folder=self.folder, rotation=self.rotation)
+            if self.config is not None:
+                self.inner.submit_video(KIND_CONFIG, 0, self.config)
+        elif kind == "h264":
+            self.inner = self.h264_factory(self.device_name, folder=self.folder, rotation=self.rotation,
+                                           audio_config=self.audio_config)
             if self.config is not None:
                 self.inner.submit_video(KIND_CONFIG, 0, self.config)
         else:
@@ -271,6 +284,15 @@ class AutoRecorder:
         if self.kind == "h264":
             self.inner.submit_video(kind, pts_us, data)
             self._video_frames += 1
+
+    def submit_audio_packet(self, kind: int, pts_us: int, data: bytes) -> None:
+        """AAC from the phone (kind 4 config / 5 frame), timestamped on the video's clock."""
+        if self.closed:
+            return
+        if kind == 4:
+            self.audio_config = data
+        if self.inner is not None and hasattr(self.inner, "submit_audio_packet"):
+            self.inner.submit_audio_packet(kind, pts_us, data)
 
     def submit_audio(self, pcm: bytes, rate: int = 16000) -> None:
         if self.closed:

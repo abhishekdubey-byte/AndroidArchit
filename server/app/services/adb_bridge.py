@@ -312,6 +312,11 @@ class ADBBridge:
         out = await self.run_device_shell(serial, cmd)
         return "Events injected: 1" in out
 
+    async def companion_installed(self, serial: str) -> bool:
+        """True iff the Operator Companion app is installed for the phone's current user."""
+        out = await self.run_device_shell(serial, "pm list packages com.operator.companion")
+        return any(l.strip() == "package:com.operator.companion" for l in (out or "").splitlines())
+
     async def foreground_package(self, serial: str) -> Optional[str]:
         """Package of the window that has focus right now (None if it cannot be read)."""
         out = await self.run_device_shell(serial, "dumpsys window windows | grep -E 'mCurrentFocus'")

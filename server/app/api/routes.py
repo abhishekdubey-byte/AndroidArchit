@@ -267,7 +267,7 @@ def create_router(device_manager: DeviceManager, adb_bridge: ADBBridge, ai_agent
         return {"status": "success" if ok else "failed", "action": "dial", "number": number}
 
     @router.post("/devices/{device_id}/call/simulate_incoming")
-    async def simulate_incoming_call(device_id: str, phone_number: str = "+91 82692 20295", caller_name: str = "Bro Code"):
+    async def simulate_incoming_call(device_id: str, phone_number: str = "+00 00000 00000", caller_name: str = "Test Caller"):
         dev = resolve_device(device_id)
         await device_manager._notify("INCOMING_CALL", {
             "device_id": dev.id,
@@ -277,9 +277,15 @@ def create_router(device_manager: DeviceManager, adb_bridge: ADBBridge, ai_agent
             "state": "ringing"
         })
     # 9. Silent Headless Camera & Video Capture (Zero UI, Sensor Direct)
+    async def require_companion_on_usb(dev: Device):
+        """Camera capture runs inside the companion app: say so at once instead of timing out (43-63 s)."""
+        if dev.transport == "adb" and dev.status != "offline" and not await adb_bridge.companion_installed(dev.serial):
+            raise HTTPException(status_code=409, detail="Install the Operator Companion app on this phone to use the camera")
+
     @router.post("/devices/{device_id}/camera/photo")
     async def capture_silent_photo(device_id: str, lens: str = Query("back", pattern="^(back|front)$")):
         dev = resolve_device(device_id)
+        await require_companion_on_usb(dev)
         if ws_hub:
             res = await ws_hub.capture_headless_photo(dev.id, lens=lens)
             if res.get("success"):
@@ -299,6 +305,7 @@ def create_router(device_manager: DeviceManager, adb_bridge: ADBBridge, ai_agent
     @router.post("/devices/{device_id}/camera/video")
     async def record_silent_video(device_id: str, lens: str = Query("back", pattern="^(back|front)$"), duration_sec: int = Query(5, ge=1, le=120)):
         dev = resolve_device(device_id)
+        await require_companion_on_usb(dev)
         if ws_hub:
             res = await ws_hub.record_headless_video(dev.id, lens=lens, duration_sec=duration_sec)
             if res.get("success"):

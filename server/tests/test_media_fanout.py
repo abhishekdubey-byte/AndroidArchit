@@ -53,8 +53,8 @@ class TestMediaFanout(unittest.IsolatedAsyncioTestCase):
         f = MediaFanout(queue_max=10)
         fast, gate = FakeWS(), asyncio.Event()
         slow = FakeWS(gate)
-        f.add(fast, True)
-        f.add(slow, True)
+        f.add(fast, True); f.subscribe(fast, "d")
+        f.add(slow, True); f.subscribe(slow, "d")
         await f.publish("d", cfg())
         await f.publish("d", key(1))
         for i in range(2, 102):
@@ -76,13 +76,13 @@ class TestMediaFanout(unittest.IsolatedAsyncioTestCase):
     async def test_late_joiner_gets_config_and_current_group(self):
         f = MediaFanout()
         early = FakeWS()
-        f.add(early, True)
+        f.add(early, True); f.subscribe(early, "d")
         await f.publish("d", cfg())
         await f.publish("d", key(1))
         await f.publish("d", delta(2))
         await f.publish("d", delta(3))
         late = FakeWS()
-        f.add(late, True)
+        f.add(late, True); f.subscribe(late, "d")
         await f.publish("d", delta(4))
         await f.flush()
         self.assertEqual([(g[0], g[2]) for g in late.got],
@@ -92,7 +92,7 @@ class TestMediaFanout(unittest.IsolatedAsyncioTestCase):
     async def test_jpeg_client_gets_no_binary(self):
         f = MediaFanout()
         jpeg = FakeWS()
-        f.add(jpeg, False)
+        f.add(jpeg, False); f.subscribe(jpeg, "d")
         await f.publish("d", cfg())
         await f.publish("d", key(1))
         await f.flush()
@@ -105,14 +105,14 @@ class TestMediaFanout(unittest.IsolatedAsyncioTestCase):
     async def test_new_config_resets_group(self):
         f = MediaFanout()
         a = FakeWS()
-        f.add(a, True)
+        f.add(a, True); f.subscribe(a, "d")
         await f.publish("d", cfg())
         await f.publish("d", key(1))
         await f.publish("d", delta(2))
         await f.publish("d", cfg())            # rotation: new SPS
         await f.publish("d", key(10))
         late = FakeWS()
-        f.add(late, True)
+        f.add(late, True); f.subscribe(late, "d")
         await f.publish("d", delta(11))
         await f.flush()
         self.assertEqual([g[2] for g in late.got], [0, 10, 11])
@@ -139,7 +139,7 @@ class TestResync(unittest.IsolatedAsyncioTestCase):
     async def test_request_resync_replays_config_and_group(self):
         f = MediaFanout()
         ws = FakeWS()
-        f.add(ws, True)
+        f.add(ws, True); f.subscribe(ws, "d")
         await f.publish("d", cfg())
         await f.publish("d", key(1))
         await f.publish("d", delta(2))

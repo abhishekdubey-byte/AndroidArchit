@@ -64,6 +64,7 @@ class TestHubCameraPackets(unittest.IsolatedAsyncioTestCase):
         viewer = FakeWS()
         hub.dashboard_clients.add(viewer)
         hub.fanout.add(viewer, True)
+        hub.fanout.subscribe(viewer, "xiaomi#cam")   # the dashboard started this camera
         for k, pts in ((1, 0), (2, 1000), (3, 34000)):
             self.assertTrue(await hub.handle_device_binary(phone, device_frame({"type": "CAMERA_PKT", "k": k, "pts": pts}, b"x")))
         await hub.fanout.flush()

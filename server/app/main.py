@@ -105,6 +105,7 @@ async def lifespan(app: FastAPI):
     yield
     update_watch.cancel()
     await routines.stop()
+    await ws_hub.shutdown()   # end fast mirrors / input sessions: no adb forward or phone process left behind
     
     await cloud_bridge.stop()
     print("[Shutdown] Stopping device manager...")

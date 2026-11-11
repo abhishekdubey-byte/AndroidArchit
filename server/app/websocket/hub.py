@@ -101,6 +101,10 @@ class WebSocketHub:
 
     async def _handle_device_event(self, event_type: str, data: Any):
         payload = data.dict() if hasattr(data, 'dict') else data
+        if event_type == "DEVICE_CONNECTED" and isinstance(payload, dict) and payload.get("id"):
+            # a replug starts clean: no 60 s of slow snapshots because the last attempt hit the unplug
+            self._fast_mirror_failed.pop(payload["id"], None)
+            self.input_router.forget_device(payload["id"])
         await self.broadcast_to_dashboards({
             "type": event_type,
             "data": payload,
@@ -202,6 +206,9 @@ class WebSocketHub:
                 await websocket.send_json({"type": "SCREEN_UNAVAILABLE", "device_id": device_id,
                                            "payload": {"reason": "Connecting to the phone's screen remotely…"}})
             if device_id:
+                if target is not None:
+                    device_id = target.id
+                self.fanout.subscribe(websocket, device_id)
                 self.active_streaming_devices.add(device_id)
                 if device_id not in self.streaming_tasks or self.streaming_tasks[device_id].done():
                     self.streaming_tasks[device_id] = asyncio.create_task(self._screen_stream_loop(device_id))
@@ -225,6 +232,13 @@ class WebSocketHub:
             lens = "front" if payload.get("lens") == "front" else "back"
             dev = self.device_manager.get_device(device_id)
             comp_sock = self._get_companion_socket(dev)
+            cam_stream = f"{dev.id if dev else device_id}#cam"
+            if msg_type == "START_CAMERA_STREAM":
+                self.fanout.subscribe(websocket, cam_stream)
+            elif msg_type == "STOP_CAMERA_STREAM":
+                self.fanout.unsubscribe(websocket, cam_stream)
+                if self.fanout.subscribers(cam_stream):
+                    return                               # another dashboard is still watching this camera
             if comp_sock:
                 cam_payload = {"lens": lens}
                 if msg_type == "START_CAMERA_STREAM":
@@ -278,11 +292,9 @@ class WebSocketHub:
             await self.broadcast_to_dashboards({"type": msg_type, "device_id": did, "payload": payload})
 
         elif msg_type == "STOP_SCREEN_STREAM":
-            if device_id and device_id in self.active_streaming_devices:
-                self.active_streaming_devices.remove(device_id)
-            session = self.mirror_sessions.get(device_id) if device_id else None
-            if session:
-                await session.stop()  # a static screen sends no packets: end the read loop now
+            if device_id:
+                self.fanout.unsubscribe(websocket, device_id)
+                await self._stop_unwatched(device_id)
 
         elif msg_type == "MIRROR_RESYNC":
             if device_id and websocket in self.dashboard_clients:
@@ -755,7 +767,7 @@ class WebSocketHub:
                 await self.broadcast_to_dashboards({"type": "SCREEN_UNAVAILABLE", "device_id": device_id,
                                                     "payload": {"reason": reason}})
 
-        while device_id in self.active_streaming_devices and len(self.dashboard_clients) > 0:
+        while device_id in self.active_streaming_devices and self.fanout.subscribers(device_id) > 0:
             dev = self.device_manager.get_device(device_id)
             if not dev:
                 break
@@ -769,13 +781,13 @@ class WebSocketHub:
                     and time.time() - self._fast_mirror_failed.get(device_id, 0) > 60):
                 if await self._run_fast_mirror(dev, device_id, tell):
                     notice = None
-                    if device_id in self.active_streaming_devices and self.dashboard_clients:
+                    if device_id in self.active_streaming_devices and self.fanout.h264_viewers(device_id) > 0:
                         await asyncio.sleep(2.0)  # stream ended (unplugged / server died): retry shortly
                     continue
             start_time = asyncio.get_event_loop().time()
             try:
                 _, b64_frame = await self.adb.capture_screen(dev.serial, scale_width=540, quality=70 if on_usb else 55)
-                await self.broadcast_to_dashboards({
+                await self._send_to(self.fanout.subscriber_sockets(device_id), {
                     "type": "SCREEN_FRAME",
                     "device_id": device_id,
                     "payload": {"width": 540, "data_base64": b64_frame}
@@ -840,10 +852,13 @@ class WebSocketHub:
         self.mirror_sessions[device_id] = session
         print(f"[WebSocketHub] Fast mirroring (H.264 {session.width}x{session.height}) for {dev.name}")
         legacy = asyncio.create_task(self._snapshots_for_jpeg_viewers(device_id, dev.serial))
+        frames = 0
         try:
             async for pkt in session.packets():
                 await self.fanout.publish(device_id, pkt)
-                if device_id not in self.active_streaming_devices or not self.dashboard_clients:
+                if not pkt.is_config:
+                    frames += 1
+                if device_id not in self.active_streaming_devices or self.fanout.h264_viewers(device_id) == 0:
                     break
         finally:
             legacy.cancel()
@@ -851,12 +866,18 @@ class WebSocketHub:
             if self.mirror_sessions.get(device_id) is session:
                 del self.mirror_sessions[device_id]
             self.fanout.forget_device(device_id)
+        wanted = device_id in self.active_streaming_devices and self.fanout.h264_viewers(device_id) > 0
+        if frames == 0 and wanted:
+            # the phone accepted the session but its encoder/capture died before the first frame
+            self._fast_mirror_failed[device_id] = time.time()
+            await tell("Fast mirroring unavailable: the phone's screen encoder stopped — using slow snapshots")
+            return False
         return True
 
     async def _snapshots_for_jpeg_viewers(self, device_id: str, serial: str):
         """While H.264 runs, browsers without WebCodecs (e.g. a remote http:// dashboard) get ~1 fps JPEGs."""
         while True:
-            jpeg_clients = [c for c in list(self.dashboard_clients) if not self.fanout.wants_h264(c)]
+            jpeg_clients = self.fanout.jpeg_clients(device_id)   # only viewers that started this mirror
             if jpeg_clients:
                 try:
                     _, b64 = await self.adb.capture_screen(serial, scale_width=540, quality=60)
@@ -873,12 +894,27 @@ class WebSocketHub:
             await asyncio.sleep(1.0)
 
     async def dashboard_left(self, websocket) -> None:
-        """A dashboard disconnected: forget it; with nobody watching, stop the fast mirrors."""
+        """A dashboard disconnected: forget it; stop every mirror nobody watches any more."""
         self.dashboard_clients.discard(websocket)
         self.fanout.remove(websocket)
-        if not self.dashboard_clients:
-            for session in list(self.mirror_sessions.values()):
-                await session.stop()
+        for device_id in list(self.active_streaming_devices) + list(self.mirror_sessions):
+            await self._stop_unwatched(device_id)
+
+    async def _stop_unwatched(self, device_id: str) -> None:
+        if self.fanout.subscribers(device_id) == 0:
+            self.active_streaming_devices.discard(device_id)
+            session = self.mirror_sessions.get(device_id)
+            if session:
+                await session.stop()  # a static screen sends no packets: end the read loop now
+        elif self.fanout.h264_viewers(device_id) == 0 and device_id in self.mirror_sessions:
+            await self.mirror_sessions[device_id].stop()   # only JPEG viewers left: the loop switches to snapshots
+
+    async def _send_to(self, sockets, message: Dict[str, Any]) -> None:
+        for ws in sockets:
+            try:
+                await asyncio.wait_for(ws.send_json(message), 2.0)
+            except Exception:
+                pass
 
     async def broadcast_to_dashboards(self, message: Dict[str, Any]):
         clients = list(self.dashboard_clients)  # snapshot: the set may change while we await
@@ -890,7 +926,12 @@ class WebSocketHub:
                 # A slow remote dashboard must not stall phone traffic handled on the same loop
                 await asyncio.wait_for(client.send_json(message), 2.0)
             except Exception:
+                # close it rather than keep a half-alive viewer: the browser reconnects and resubscribes
                 self.dashboard_clients.discard(client)
+                self.fanout.remove(client)
+                close = getattr(client, "close", None)
+                if close is not None:
+                    asyncio.ensure_future(self._close_quietly(close))
         await asyncio.gather(*(send(c) for c in clients))
 
     def _finalize_recording_soon(self, device_id: Optional[str]) -> None:
@@ -898,6 +939,19 @@ class WebSocketHub:
         rec = self.cam_recorders.pop(device_id, None) if device_id else None
         if rec:
             asyncio.create_task(self._close_recording(device_id, rec))
+
+    @staticmethod
+    async def _close_quietly(close) -> None:
+        try:
+            await close(code=1011)
+        except Exception:
+            pass
+
+    async def shutdown(self) -> None:
+        """Server stopping: end every mirror and input session so no adb forward or phone process is left."""
+        for session in list(self.mirror_sessions.values()):
+            await session.stop()
+        await self.input_router.close()
 
     async def _finalize_recording(self, device_id: Optional[str]):
         rec = self.cam_recorders.pop(device_id, None) if device_id else None

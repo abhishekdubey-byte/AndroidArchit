@@ -67,6 +67,9 @@ class CameraH264Streamer(
     private var coolSinceMs = 0L
     private var lastTickMs = 0L
     private var lastThermalMs = 0L
+    // Camera timestamps are CLOCK_BOOTTIME on some phones and CLOCK_MONOTONIC on others; the microphone uses
+    // MONOTONIC (System.nanoTime). Shift the video onto that clock once per encoder so audio and video line up.
+    private var ptsShiftUs: Long? = null
 
     @Synchronized
     fun start(which: String) {
@@ -167,6 +170,7 @@ class CameraH264Streamer(
             inputSurface = surface
             skippingDeltas = false
             waitKey = false
+            ptsShiftUs = null
             drainThread = Thread({ drain(enc) }, "CameraH264Drain").apply { start() }
 
             onState(JSONObject().put("codec", "h264").put("width", size.width).put("height", size.height)
@@ -262,9 +266,10 @@ class CameraH264Streamer(
                             waitKey && kind == 3 -> false             // resume only at a key frame
                             else -> true
                         }
+                        if (kind != 1 && ptsShiftUs == null) ptsShiftUs = clockShift(info.presentationTimeUs)
                         if (send) {
                             if (kind == 2) waitKey = false
-                            onPacket(kind, info.presentationTimeUs, data)
+                            onPacket(kind, if (kind == 1) info.presentationTimeUs else info.presentationTimeUs + (ptsShiftUs ?: 0L), data)
                         }
                     }
                 } catch (e: Exception) {
@@ -275,6 +280,15 @@ class CameraH264Streamer(
             }
             tick(enc)
         }
+    }
+
+    /** 0 if [ptsUs] is already on System.nanoTime's clock, else the BOOTTIME→MONOTONIC difference. */
+    private fun clockShift(ptsUs: Long): Long {
+        val mono = System.nanoTime() / 1000
+        val boot = SystemClock.elapsedRealtimeNanos() / 1000
+        val shift = if (kotlin.math.abs(ptsUs - boot) < kotlin.math.abs(ptsUs - mono)) mono - boot else 0L
+        Log.i(TAG, "video clock: ${if (shift == 0L) "monotonic" else "boottime (shift ${shift} us)"}")
+        return shift
     }
 
     private fun tick(enc: MediaCodec) {

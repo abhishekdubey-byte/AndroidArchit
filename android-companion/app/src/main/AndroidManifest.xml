@@ -169,6 +169,12 @@
             android:foregroundServiceType="camera|microphone"
             android:exported="false" />
 
+        <!-- "Listen Live": the phone microphone streamed to the dashboard -->
+        <service
+            android:name=".service.PhoneListenService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
+
         <!-- Invisible launcher that starts the camera service from a foreground state (OEM policy) -->
         <activity
             android:name=".LivePreviewLauncherActivity"

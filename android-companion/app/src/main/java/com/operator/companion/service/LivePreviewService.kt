@@ -32,6 +32,7 @@ class LivePreviewService : Service() {
     companion object {
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
+        private const val MIC_USER = "camera"
         @Volatile private var active: CameraPreviewStreamer? = null
         @Volatile private var activeH264: CameraH264Streamer? = null
         // "h264" when the laptop can decode hardware H.264 (newer servers), else the JPEG frames old ones expect
@@ -94,10 +95,20 @@ class LivePreviewService : Service() {
         }
         streamer?.start(desiredLens)          // idempotent; uses the latest requested lens
         h264?.start(desiredLens)
-        if (audio == null) audio = PreviewAudioStreamer(applicationContext) { b64 ->
-            CompanionWebSocketClient.activeInstance?.sendCameraAudio(b64, PreviewAudioStreamer.SAMPLE_RATE)
+        val micAllowed = micInForeground || Build.VERSION.SDK_INT < Build.VERSION_CODES.R
+        if (wantH264) {
+            // H.264 viewers: 48 kHz AAC on the video's clock (synced playback + timestamp-exact recordings)
+            if (audio != null) { runCatching { audio?.stop() }; audio = null }
+            if (micAllowed && !PhoneMic.inUse(MIC_USER)) PhoneMic.acquire(applicationContext, MIC_USER,
+                onPacket = { kind, pts, data -> CompanionWebSocketClient.activeInstance?.sendCameraPacket(kind, pts, data) },
+                onError = { msg -> Log.w(TAG, "camera audio: $msg") })
+        } else {
+            PhoneMic.release(MIC_USER)
+            if (audio == null) audio = PreviewAudioStreamer(applicationContext) { b64 ->
+                CompanionWebSocketClient.activeInstance?.sendCameraAudio(b64, PreviewAudioStreamer.SAMPLE_RATE)
+            }
+            if (micAllowed) audio?.start()  // idempotent
         }
-        if (micInForeground || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) audio?.start()  // idempotent
         CompanionWebSocketClient.activeInstance?.notifyCameraState(true, null, desiredLens)
         Log.d(TAG, "Live preview service started (lens=$desiredLens)")
         return START_NOT_STICKY
@@ -127,6 +138,7 @@ class LivePreviewService : Service() {
         h264 = null; activeH264 = null
         runCatching { audio?.stop() }
         audio = null
+        PhoneMic.release(MIC_USER)
         streamer = null; active = null
         if (!errorNotified) CompanionWebSocketClient.activeInstance?.notifyCameraState(false, null)
         // DETACH, not REMOVE: the shared notification still belongs to RelayService

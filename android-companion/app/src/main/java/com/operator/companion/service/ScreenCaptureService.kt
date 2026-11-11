@@ -36,6 +36,10 @@ import org.json.JSONObject
  * late viewers fed. Packets go out as binary SCREEN_PKT frames (kind 1 config, 2 key, 3 delta) and the laptop puts
  * them on the same stream, fan-out and player as the USB mirror. Rotation re-creates the encoder on the same
  * VirtualDisplay (resize + new surface; Android 14 forbids a second display per token). Secure windows stay black.
+ *
+ * When nobody watches (dashboard tab hidden, viewer left) the laptop asks for a pause: the encoder stops and the
+ * display renders nowhere, but the consent token is kept for [IDLE_STOP_MS], so mirroring resumes without asking
+ * the user again. A "Start now" tapped after the laptop stopped waiting starts paused for the same reason.
  */
 class ScreenCaptureService : Service() {
     companion object {
@@ -44,15 +48,27 @@ class ScreenCaptureService : Service() {
         const val EXTRA_RESULT_DATA = "result_data"
         const val ACTION_STOP = "stop"
         const val ACTION_KEYFRAME = "keyframe"
+        const val ACTION_PAUSE = "pause"
+        private const val IDLE_STOP_MS = 5 * 60_000L
 
         @Volatile var running = false
             private set
+        /** The laptop currently wants pictures (false after a STOP/pause; set by START). */
+        @Volatile var wanted = false
+
+        fun pause(ctx: Context) {
+            wanted = false
+            if (running) runCatching { ctx.startService(Intent(ctx, ScreenCaptureService::class.java).setAction(ACTION_PAUSE)) }
+        }
 
         fun stop(ctx: Context) {
+            wanted = false
             runCatching { ctx.startService(Intent(ctx, ScreenCaptureService::class.java).setAction(ACTION_STOP)) }
         }
 
+        /** Already sharing: resume a paused stream, or send a fresh key frame to a running one. */
         fun requestKeyFrame(ctx: Context) {
+            wanted = true
             if (running) runCatching { ctx.startService(Intent(ctx, ScreenCaptureService::class.java).setAction(ACTION_KEYFRAME)) }
         }
 
@@ -81,13 +97,20 @@ class ScreenCaptureService : Service() {
     private var throttled = false
     private var size = 0 to 0
     private var stoppedByError = false
+    private var paused = false
+    private val idleStop = Runnable { Log.i(TAG, "idle for 5 min: ending screen sharing"); stopSelf() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
-            ACTION_KEYFRAME -> { requestSync(); return START_NOT_STICKY }
+            ACTION_KEYFRAME -> {
+                val h = handler
+                if (h != null) h.post { if (paused) { h.removeCallbacks(idleStop); startEncoding() } else requestSync() }
+                return START_NOT_STICKY
+            }
+            ACTION_PAUSE -> { handler?.post { pauseEncoding() }; return START_NOT_STICKY }
         }
         if (projection != null) { requestSync(); return START_NOT_STICKY }   // already live: just refresh viewers
         val code = intent?.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED
@@ -122,9 +145,32 @@ class ScreenCaptureService : Service() {
         return d.getInt("width") to d.getInt("height")
     }
 
+    /** Nobody watching: stop encoding (no heat, no traffic) but keep the token for a quick resume. */
+    private fun pauseEncoding() {
+        if (paused) return
+        paused = true
+        stopEncoder()
+        runCatching { display?.surface = null }
+        handler?.postDelayed(idleStop, IDLE_STOP_MS)
+        notify(true, extra = JSONObject().put("paused", true))
+        Log.i(TAG, "screen stream paused (token kept)")
+    }
+
     /** (Re)create the encoder for the current orientation and point the virtual display at it. */
     private fun startEncoding() {
         val mp = projection ?: return
+        if (!wanted) {                                  // consent arrived after the laptop stopped waiting
+            if (display == null) {
+                val (dw, dh) = displaySize()
+                val (w, h) = ScreenSize.choose(dw, dh)
+                display = mp.createVirtualDisplay("CompanionScreen", w, h, resources.displayMetrics.densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, null, null, handler)
+                size = w to h
+            }
+            pauseEncoding()
+            return
+        }
+        paused = false
         try {
             val (dw, dh) = displaySize()
             val (w, h) = ScreenSize.choose(dw, dh)
@@ -191,7 +237,7 @@ class ScreenCaptureService : Service() {
         val h = handler ?: return
         h.post {
             val (dw, dh) = displaySize()
-            if (ScreenSize.choose(dw, dh) != size) startEncoding()     // rotated: new size, new config packet
+            if (!paused && ScreenSize.choose(dw, dh) != size) startEncoding()   // rotated: new size, new config packet
         }
     }
 
@@ -262,6 +308,7 @@ class ScreenCaptureService : Service() {
         val h = handler
         val done = java.util.concurrent.CountDownLatch(1)
         val cleanup = {
+            h?.removeCallbacks(idleStop)
             stopEncoder()
             runCatching { display?.release() }
             display = null

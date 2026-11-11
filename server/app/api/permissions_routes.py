@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from ..services.permissions import PermissionService
+from ..services.storage_service import StorageError
 
 
 def create_permissions_router(perms: PermissionService) -> APIRouter:
@@ -17,5 +18,12 @@ def create_permissions_router(perms: PermissionService) -> APIRouter:
         if rep is None:
             raise HTTPException(404, f"Phone '{device_id}' not found")
         return rep
+
+    @router.post("/{device_id}/screen-share")
+    async def preapprove_screen_share(device_id: str):
+        try:
+            return await perms.preapprove_screen_share(device_id)
+        except StorageError as e:
+            raise HTTPException(e.status, e.message)
 
     return router

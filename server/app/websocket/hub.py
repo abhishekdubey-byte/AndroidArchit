@@ -1009,7 +1009,7 @@ class WebSocketHub:
         except Exception:
             self._remote_screen.pop(device_id, None)
             return False
-        await tell("Allow screen sharing on the phone (tap “Start now”)…")
+        await tell("Connecting to the phone's screen… if the phone asks, tap “Start now”.")
         asked = time.monotonic()
         legacy = asyncio.create_task(self._snapshots_for_jpeg_viewers(device_id, dev.serial))
         ok = True
@@ -1045,7 +1045,9 @@ class WebSocketHub:
                 del self._remote_screen[device_id]
             if st["state"] in ("starting", "live"):
                 try:
-                    await sock.send_json({"type": "STOP_SCREEN_PKT", "payload": {}})
+                    # nobody watching / USB took over: the phone pauses but keeps the user's consent for 5 min,
+                    # so mirroring comes back without another "Start now"; a failure ends it
+                    await sock.send_json({"type": "STOP_SCREEN_PKT", "payload": {"keep": ok}})
                 except Exception:
                     pass
             self.fanout.forget_device(device_id)

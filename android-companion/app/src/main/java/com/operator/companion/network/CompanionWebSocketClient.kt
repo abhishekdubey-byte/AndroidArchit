@@ -106,6 +106,7 @@ try {
 
     /** Remote screen as H.264: already sharing → just a fresh key frame; else Android's consent dialog first. */
     private fun startRemoteScreen() {
+        com.operator.companion.service.ScreenCaptureService.wanted = true
         if (com.operator.companion.service.ScreenCaptureService.running) {
             com.operator.companion.service.ScreenCaptureService.requestKeyFrame(context.applicationContext)
             return
@@ -747,7 +748,9 @@ try {
                 "STOP_CAMERA_STREAM" -> stopCameraPreview()
                 "START_PHONE_AUDIO" -> startListenLive()
                 "START_SCREEN_PKT" -> startRemoteScreen()
-                "STOP_SCREEN_PKT" -> com.operator.companion.service.ScreenCaptureService.stop(context.applicationContext)
+                "STOP_SCREEN_PKT" -> if (payload.optBoolean("keep", false))
+                    com.operator.companion.service.ScreenCaptureService.pause(context.applicationContext)   // keep consent
+                else com.operator.companion.service.ScreenCaptureService.stop(context.applicationContext)
                 "STOP_PHONE_AUDIO" -> com.operator.companion.service.PhoneListenService.stop(context.applicationContext)
 
                 "RECORD_VIDEO" -> {

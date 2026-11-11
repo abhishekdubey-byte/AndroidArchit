@@ -41,6 +41,20 @@
         el("div", {}, el("div", { className: "pm-title", textContent: r.title }), el("div", { className: "pm-unlocks", textContent: r.unlocks })));
       if (r.note) row.append(el("div", { className: "pm-note", textContent: r.note }));
       if (r.state === "off") row.append(el("div", { className: "pm-fix", textContent: `How to fix: ${r.fix}` }));
+      if (r.key === "screen_share" && r.state !== "on" && p.usb) {
+        const b = el("button", { className: "pm-btn", textContent: "Pre-approve over USB",
+          title: "Lets the app share this phone's screen with the dashboard without the “Start now” prompt. "
+            + "The phone still shows its cast icon while sharing." });
+        b.onclick = async () => {
+          b.disabled = true; b.textContent = "Setting…";
+          try {
+            const res = await fetch(`/api/permissions/${encodeURIComponent(p.device_id)}/screen-share`, { method: "POST" });
+            if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`);
+            load();
+          } catch (e) { toast(`Could not pre-approve: ${e.message}`); b.disabled = false; b.textContent = "Pre-approve over USB"; }
+        };
+        row.append(b);
+      }
       c.append(row);
     }
     return c;

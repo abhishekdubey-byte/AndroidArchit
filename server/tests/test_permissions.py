@@ -226,3 +226,39 @@ class TestHubCapabilities(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestScreenSharePreapproval(unittest.TestCase):
+    """Phase 5 follow-up: the remote screen without Android's "Start now" prompt (app op PROJECT_MEDIA)."""
+
+    def test_adb_report_reads_project_media(self):
+        from app.services.permissions import parse_adb_report
+        self.assertIs(parse_adb_report(FIXTURE)["screen_share"], False)          # never set: default
+        text = FIXTURE.replace("__ACC\n", "__PRJ\nPROJECT_MEDIA: allow\n__ACC\n", 1)
+        self.assertIs(parse_adb_report(text)["screen_share"], True)
+
+    def test_preapprove_over_usb(self):
+        from app.services.permissions import PermissionService
+        st = FakeStorage("PROJECT_MEDIA: allow\n")
+        cmds = []
+        orig = st.shell
+
+        async def shell(serial, cmd, timeout=30.0):
+            cmds.append(cmd)
+            return await orig(serial, cmd, timeout)
+        st.shell = shell
+        res = run(PermissionService(FakeDM([FakeDev("u1", "adb")]), FakeHub(set()), st).preapprove_screen_share("u1"))
+        self.assertTrue(res["screen_share"])
+        self.assertIn("appops set com.operator.companion PROJECT_MEDIA allow", cmds[0])
+
+    def test_preapprove_needs_usb_and_reports_refusal(self):
+        from app.services.permissions import PermissionService
+        from app.services.storage_service import StorageError
+        remote = PermissionService(FakeDM([FakeDev("r1", "companion_ws", "r1")]), FakeHub({"r1"}), FakeStorage(""))
+        with self.assertRaises(StorageError) as e:
+            run(remote.preapprove_screen_share("r1"))
+        self.assertEqual(e.exception.status, 412)
+        refused = PermissionService(FakeDM([FakeDev("u1", "adb")]), FakeHub(set()), FakeStorage("PROJECT_MEDIA: ignore\n"))
+        with self.assertRaises(StorageError) as e:
+            run(refused.preapprove_screen_share("u1"))
+        self.assertEqual(e.exception.status, 502)

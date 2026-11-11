@@ -32,7 +32,12 @@ CATALOG = [
      "and auto launch", False),
     ("install_updates", "EVOLVE · Install updates", "One-tap app updates from the laptop",
      FIX + "EVOLVE → Grant → \"Allow from this source\"", False),
+    ("screen_share", "CAST · Screen sharing without asking",
+     "Live screen over Wi-Fi without tapping “Start now” on the phone each time",
+     "Plug the phone in by USB and press “Pre-approve over USB” on this page (Android 9–13; newer Android "
+     "versions may still ask once per session)", False),
 ]
+SCREEN_SHARE_GRANT = f"appops set {PKG} PROJECT_MEDIA allow; appops get {PKG} PROJECT_MEDIA"
 
 
 def rows(perms: Dict) -> List[Dict]:
@@ -63,7 +68,7 @@ ADB_SCRIPT = (
     "'versionName=|android.permission.(CAMERA|RECORD_AUDIO|READ_PHONE_STATE|ANSWER_PHONE_CALLS|CALL_PHONE|"
     "READ_EXTERNAL_STORAGE|READ_MEDIA_IMAGES): granted'; "
     f"echo __MES; appops get {PKG} MANAGE_EXTERNAL_STORAGE; echo __SAW; appops get {PKG} SYSTEM_ALERT_WINDOW; "
-    f"echo __RIP; appops get {PKG} REQUEST_INSTALL_PACKAGES; echo __ACC; settings get secure enabled_accessibility_services; "
+    f"echo __RIP; appops get {PKG} REQUEST_INSTALL_PACKAGES; echo __PRJ; appops get {PKG} PROJECT_MEDIA; echo __ACC; settings get secure enabled_accessibility_services; "
     f"echo __IDLE; dumpsys deviceidle whitelist | grep -c {PKG}; echo __PID; pidof {PKG}; echo __END"
 )
 RUNTIME = {"camera": "CAMERA", "audio": "RECORD_AUDIO", "phone_state": "READ_PHONE_STATE",
@@ -107,6 +112,7 @@ def parse_adb_report(text: str) -> Dict:
         else granted("READ_EXTERNAL_STORAGE"),
         overlay=_appop_allowed(s.get("SAW", ""), "SYSTEM_ALERT_WINDOW"),
         install_updates=_appop_allowed(s.get("RIP", ""), "REQUEST_INSTALL_PACKAGES"),
+        screen_share=_appop_allowed(s.get("PRJ", ""), "PROJECT_MEDIA"),
         accessibility_enabled=f"{PKG}/" in s.get("ACC", ""),
         battery_unrestricted=(s.get("IDLE", "0").strip() or "0") != "0",
         app_running=bool(s.get("PID", "").strip()),
@@ -125,7 +131,7 @@ class PermissionService:
         if not dev:
             return None
         on_usb = dev.transport == "adb" and dev.status != "offline"
-        rep = {"device_id": dev.id, "name": dev.name, "checked": time.time(), "app_running": None}
+        rep = {"device_id": dev.id, "name": dev.name, "checked": time.time(), "app_running": None, "usb": on_usb}
         perms: Dict = {}
         adb_error = None
         if self.hub.companion_connected(dev) and await self.hub.request_capabilities(dev):
@@ -148,6 +154,20 @@ class PermissionService:
         rep["app_version"], rep["edition"] = perms.get("app_version"), perms.get("edition")
         rep["rows"] = rows(perms) if perms else []
         return rep
+
+    async def preapprove_screen_share(self, device_id: str) -> Dict:
+        """The user's choice on the Permissions page: let the app start the remote screen without Android's
+        "Start now" prompt (app op PROJECT_MEDIA = allow). Needs USB; the phone's status-bar cast icon still shows
+        whenever the screen is being shared."""
+        dev = self.dm.get_device(device_id)
+        if not dev:
+            raise StorageError(f"Phone '{device_id}' not found", 404)
+        if not (dev.transport == "adb" and dev.status != "offline"):
+            raise StorageError("Plug the phone in by USB first (this can only be set over USB)", 412)
+        code, out = await self.storage.shell(dev.serial, SCREEN_SHARE_GRANT, timeout=15)
+        if not _appop_allowed(out, "PROJECT_MEDIA"):
+            raise StorageError(f"The phone did not accept it: {out.strip()[-200:] or code}", 502)
+        return {"device_id": dev.id, "screen_share": True}
 
     async def all(self) -> List[Dict]:
         """Every phone once (a phone on USB that is also on the relay is listed as its USB entry)."""

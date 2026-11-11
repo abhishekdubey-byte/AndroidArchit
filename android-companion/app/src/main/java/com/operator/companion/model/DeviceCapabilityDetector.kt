@@ -149,6 +149,13 @@ object DeviceCapabilityDetector {
             put("battery_unrestricted", (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .isIgnoringBatteryOptimizations(context.packageName))
             put("install_updates", context.packageManager.canRequestPackageInstalls())
+            // remote screen without the "Start now" prompt: Android skips it when PROJECT_MEDIA is allowed (set over USB)
+            put("screen_share", runCatching {
+                val ops = context.getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+                @Suppress("DEPRECATION")
+                ops.checkOpNoThrow("android:project_media", android.os.Process.myUid(), context.packageName) ==
+                    android.app.AppOpsManager.MODE_ALLOWED
+            }.getOrDefault(false))
             put("accessibility_enabled", com.operator.companion.relay.PermissionSetup.accessibilityEnabled(context))
             put("call_phone", ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED)
             put("edition", if (com.operator.companion.BuildConfig.LITE) "lite" else "full")

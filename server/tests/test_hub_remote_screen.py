@@ -96,6 +96,8 @@ class TestRemoteScreen(unittest.IsolatedAsyncioTestCase):
         await self.stop(ws)
         await self.stop(late)
         self.assertEqual(len(self.sent("STOP_SCREEN_PKT")), 1)
+        self.assertTrue(self.sent("STOP_SCREEN_PKT")[0]["payload"]["keep"],
+                        "nobody watching = pause; the user's consent must be kept for a quick resume")
 
     async def test_consent_refused_falls_back_to_screenshots_with_notice(self):
         ws = await self.viewer()
@@ -107,6 +109,20 @@ class TestRemoteScreen(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("not allowed" in n for n in notices), notices)
         self.assertEqual(len(self.sent("START_SCREEN_PKT")), 1, "must not nag the phone again right away")
         await self.stop(ws)
+
+    async def test_no_answer_on_the_phone_gives_up_and_ends_the_request(self):
+        orig = WebSocketHub.REMOTE_SCREEN_CONSENT
+        WebSocketHub.REMOTE_SCREEN_CONSENT = 0.3
+        try:
+            ws = await self.viewer()
+            await self.until(lambda: self.sent("STOP_SCREEN_PKT"))
+            self.assertFalse(self.sent("STOP_SCREEN_PKT")[0]["payload"]["keep"])
+            await self.until(lambda: self.adb.captures > 0)          # screenshots meanwhile
+            notices = [m["payload"]["reason"] for m in ws.json if m["type"] == "SCREEN_UNAVAILABLE"]
+            self.assertTrue(any("No answer" in n for n in notices), notices)
+            await self.stop(ws)
+        finally:
+            WebSocketHub.REMOTE_SCREEN_CONSENT = orig
 
     async def test_phone_plugged_in_hands_over_to_usb_mirror(self):
         ws = await self.viewer()

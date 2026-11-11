@@ -6,7 +6,10 @@ import shlex
 import time
 from typing import Dict, Set, Any, Optional
 from fastapi import WebSocket, WebSocketDisconnect
-from ..config import DOWNLOADS_DIR, device_capture_dir, download_url
+from ..config import (DOWNLOADS_DIR, FAST_MIRROR, MIRROR_BITRATE, MIRROR_FPS, MIRROR_MAX_SIZE, device_capture_dir,
+                      download_url)
+from ..services.scrcpy_session import MirrorUnavailable, ScrcpySession
+from .media_fanout import MediaFanout
 from ..services.device_manager import DeviceManager
 from ..services.cam_record import display_name
 from ..services.adb_bridge import ADBBridge, UnsupportedText
@@ -39,6 +42,9 @@ class WebSocketHub:
         from ..services.game import GameState
         self.game = GameState()
         self.cam_recorders: Dict[str, Any] = {}  # device_id -> CamRecorder (live preview saved to laptop)
+        self.fanout = MediaFanout()                # H.264 packets → dashboards (per-viewer backpressure)
+        self.mirror_sessions: Dict[str, ScrcpySession] = {}  # device_id -> running fast USB mirror
+        self._fast_mirror_failed: Dict[str, float] = {}      # device_id -> when fast mirroring last failed
         self.pb = None  # PowerBoosters gateway, attached in main.py
 
         # Subscribe to device manager and AI agent events
@@ -139,7 +145,7 @@ class WebSocketHub:
         except Exception as e:
             print(f"[WebSocketHub] Client error: {e}")
         finally:
-            self.dashboard_clients.discard(websocket)
+            await self.dashboard_left(websocket)
             for k, v in list(self.device_clients.items()):
                 if v is websocket:
                     del self.device_clients[k]
@@ -242,6 +248,14 @@ class WebSocketHub:
         elif msg_type == "STOP_SCREEN_STREAM":
             if device_id and device_id in self.active_streaming_devices:
                 self.active_streaming_devices.remove(device_id)
+            session = self.mirror_sessions.get(device_id) if device_id else None
+            if session:
+                await session.stop()  # a static screen sends no packets: end the read loop now
+
+        elif msg_type == "CLIENT_CAPS":
+            # The browser says whether it can decode H.264 (WebCodecs in a secure context)
+            if websocket in self.dashboard_clients:
+                self.fanout.add(websocket, bool(payload.get("h264")))
 
         # 2. Touch / Input gestures
         elif msg_type == "INPUT_TOUCH":
@@ -712,6 +726,13 @@ class WebSocketHub:
                 await tell("Phone is offline. Mirroring resumes when it reconnects.")
                 await asyncio.sleep(2.0)
                 continue
+            if (on_usb and FAST_MIRROR and self.fanout.h264_viewers(device_id) > 0
+                    and time.time() - self._fast_mirror_failed.get(device_id, 0) > 60):
+                if await self._run_fast_mirror(dev, device_id, tell):
+                    notice = None
+                    if device_id in self.active_streaming_devices and self.dashboard_clients:
+                        await asyncio.sleep(2.0)  # stream ended (unplugged / server died): retry shortly
+                    continue
             start_time = asyncio.get_event_loop().time()
             try:
                 _, b64_frame = await self.adb.capture_screen(dev.serial, scale_width=540, quality=70 if on_usb else 55)
@@ -740,6 +761,63 @@ class WebSocketHub:
                 await asyncio.sleep(min(5.0, 0.5 * failing))
 
         print(f"[WebSocketHub] Screen stream stopped for {dev.name if dev else device_id}")
+
+    async def _run_fast_mirror(self, dev, device_id: str, tell) -> bool:
+        """Hardware-H.264 mirror over USB until it ends. False = could not start (caller uses snapshots)."""
+        session = ScrcpySession(self.adb.adb_path, dev.serial, max_size=MIRROR_MAX_SIZE, bit_rate=MIRROR_BITRATE,
+                                max_fps=MIRROR_FPS)
+        try:
+            await session.start()
+        except MirrorUnavailable as e:
+            self._fast_mirror_failed[device_id] = time.time()
+            await tell(f"Fast mirroring unavailable: {e} — using slow snapshots")
+            return False
+        except Exception as e:
+            self._fast_mirror_failed[device_id] = time.time()
+            await tell(f"Fast mirroring unavailable: {e} — using slow snapshots")
+            return False
+        self.mirror_sessions[device_id] = session
+        print(f"[WebSocketHub] Fast mirroring (H.264 {session.width}x{session.height}) for {dev.name}")
+        legacy = asyncio.create_task(self._snapshots_for_jpeg_viewers(device_id, dev.serial))
+        try:
+            async for pkt in session.packets():
+                await self.fanout.publish(device_id, pkt)
+                if device_id not in self.active_streaming_devices or not self.dashboard_clients:
+                    break
+        finally:
+            legacy.cancel()
+            await session.stop()
+            if self.mirror_sessions.get(device_id) is session:
+                del self.mirror_sessions[device_id]
+            self.fanout.forget_device(device_id)
+        return True
+
+    async def _snapshots_for_jpeg_viewers(self, device_id: str, serial: str):
+        """While H.264 runs, browsers without WebCodecs (e.g. a remote http:// dashboard) get ~1 fps JPEGs."""
+        while True:
+            jpeg_clients = [c for c in list(self.dashboard_clients) if not self.fanout.wants_h264(c)]
+            if jpeg_clients:
+                try:
+                    _, b64 = await self.adb.capture_screen(serial, scale_width=540, quality=60)
+                    msg = {"type": "SCREEN_FRAME", "device_id": device_id, "payload": {"width": 540, "data_base64": b64}}
+                    for c in jpeg_clients:
+                        try:
+                            await asyncio.wait_for(c.send_json(msg), 2.0)
+                        except Exception:
+                            pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
+            await asyncio.sleep(1.0)
+
+    async def dashboard_left(self, websocket) -> None:
+        """A dashboard disconnected: forget it; with nobody watching, stop the fast mirrors."""
+        self.dashboard_clients.discard(websocket)
+        self.fanout.remove(websocket)
+        if not self.dashboard_clients:
+            for session in list(self.mirror_sessions.values()):
+                await session.stop()
 
     async def broadcast_to_dashboards(self, message: Dict[str, Any]):
         clients = list(self.dashboard_clients)  # snapshot: the set may change while we await

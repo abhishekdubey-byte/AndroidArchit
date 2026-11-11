@@ -52,6 +52,12 @@ def resolve_adb_path(env: Mapping[str, str] = os.environ,
 
 ADB_PATH = resolve_adb_path()
 
+# Fast USB mirroring (hardware H.264 via the scrcpy server); ACC_FAST_MIRROR=0 falls back to snapshots
+FAST_MIRROR = os.getenv("ACC_FAST_MIRROR", "1") != "0"
+MIRROR_MAX_SIZE = int(os.getenv("ACC_MIRROR_MAX_SIZE", "1280"))
+MIRROR_BITRATE = int(os.getenv("ACC_MIRROR_BITRATE", "8000000"))
+MIRROR_FPS = int(os.getenv("ACC_MIRROR_FPS", "60"))
+
 
 # ---- Per-phone capture folders: storage/downloads/<Brand_Model_ID>/ ----
 # Each phone gets its own folder (created when it connects) so captures from different phones never mix.

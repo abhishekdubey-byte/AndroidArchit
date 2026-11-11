@@ -14,8 +14,8 @@ android {
         applicationId = "com.operator.companion"
         minSdk = 26
         targetSdk = 35
-        versionCode = 55
-        versionName = "1.9.27"
+        versionCode = 56
+        versionName = "1.9.28"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

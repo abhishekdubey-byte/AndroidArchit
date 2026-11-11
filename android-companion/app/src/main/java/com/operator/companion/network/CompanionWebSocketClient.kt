@@ -74,11 +74,12 @@ class CompanionWebSocketClient(
 
     /** Live camera preview runs in a transparent foreground activity (OEM background-camera policies
      *  block the sensor from a pure background service on ColorOS/Realme etc.). */
-    private fun startCameraPreview(lens: String) {
+    private fun startCameraPreview(lens: String, codec: String = "jpeg") {
 try {
             // Flash a transient foreground activity so OEM camera policy allows the sensor, then it
             // starts the foreground service that actually holds the camera and survives app-switching.
             com.operator.companion.service.LivePreviewService.setLens(if (lens == "front") "front" else "back")
+            com.operator.companion.service.LivePreviewService.setCodec(codec)
             val intent = android.content.Intent(context, com.operator.companion.LivePreviewLauncherActivity::class.java).apply {
                 flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION
             }
@@ -103,6 +104,21 @@ try {
         }
     }
 
+    /** One hardware-H.264 camera packet (kind 1 config, 2 key, 3 delta) as a binary frame:
+     *  [u16 header length][JSON {"type":"CAMERA_PKT","k":kind,"pts":µs}][Annex-B bytes]. */
+    fun sendCameraPacket(kind: Int, ptsUs: Long, data: ByteArray) {
+        val ws = webSocket ?: return
+        if (kind == 3 && ws.queueSize() > 8L * 1024 * 1024) return   // never let OkHttp's 16 MB limit kill the link
+        val header = JSONObject().put("type", "CAMERA_PKT").put("k", kind).put("pts", ptsUs)
+            .toString().toByteArray(Charsets.UTF_8)
+        val frame = ByteBuffer.allocate(2 + header.size + data.size)
+        frame.putShort(header.size.toShort()).put(header).put(data)
+        ws.send(frame.array().toByteString())
+    }
+
+    /** Bytes waiting in the uplink (drives the camera's adaptive bitrate). */
+    fun queueBytes(): Long = webSocket?.queueSize() ?: 0L
+
     /** Mic audio that accompanies the live preview (PCM16 mono); dropped when the uplink is congested. */
     fun sendCameraAudio(b64Pcm: String, sampleRate: Int) {
         val ws = webSocket ?: return
@@ -112,10 +128,11 @@ try {
         }
     }
 
-    fun notifyCameraState(active: Boolean, error: String?, lens: String? = null) {
+    fun notifyCameraState(active: Boolean, error: String?, lens: String? = null, extra: JSONObject? = null) {
         val p = JSONObject().put("active", active)
         if (error != null) p.put("error", error)
         if (lens != null) p.put("lens", lens)
+        extra?.keys()?.forEach { k -> p.put(k, extra.get(k)) }
         sendDirectJson(JSONObject().put("type", "CAMERA_STREAM_STATE").put("device_id", deviceId).put("payload", p))
     }
     val deviceId: String by lazy { RelayConfig.deviceId(context) }
@@ -680,7 +697,8 @@ try {
                     launchHeadlessCamera(intent, "PHOTO_CAPTURED", lens, 0)
                 }
 
-                "START_CAMERA_STREAM" -> startCameraPreview(payload.optString("lens", "back"))
+                "START_CAMERA_STREAM" -> startCameraPreview(payload.optString("lens", "back"), payload.optString("codec", "jpeg"))
+                "CAMERA_KEYFRAME" -> com.operator.companion.service.LivePreviewService.requestKeyFrame()
                 "SET_CAMERA_LENS" -> com.operator.companion.service.LivePreviewService.switchLens(payload.optString("lens", "back"))
                 "HUNT_COMMAND" -> com.operator.companion.hunt.HuntStore.onCommand(payload)
                 "STOP_CAMERA_STREAM" -> stopCameraPreview()

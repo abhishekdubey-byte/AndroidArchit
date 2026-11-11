@@ -8,7 +8,8 @@ from typing import Dict, Set, Any, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 from ..config import (DOWNLOADS_DIR, FAST_MIRROR, MIRROR_BITRATE, MIRROR_FPS, MIRROR_MAX_SIZE, device_capture_dir,
                       download_url)
-from ..services.scrcpy_session import MirrorUnavailable, ScrcpySession
+from ..services.scrcpy_session import MirrorUnavailable, ScrcpySession, VideoPacket
+from ..services.h264_recorder import H264Recorder
 from .media_fanout import MediaFanout
 from ..services.input_router import InputRouter
 from ..services.device_manager import DeviceManager
@@ -27,6 +28,20 @@ PHONE_MESSAGES = {"DEVICE_HELLO", "RELAY_BOUND_ACK", "DEVICE_CAPABILITIES", "DEV
                   "CAMERA_FRAME", "CAMERA_STREAM_STATE", "CAMERA_AUDIO", "HUNT_STATE"}
 from ..services.pb_gateway import PHONE_TYPES as PB_PHONE_TYPES
 PHONE_MESSAGES = PHONE_MESSAGES | PB_PHONE_TYPES
+
+
+def parse_device_binary(data: bytes):
+    """A phone's binary frame: [u16 header length][JSON header][payload] → (header dict, payload); (None, b"") if malformed."""
+    if len(data) < 2:
+        return None, b""
+    n = int.from_bytes(data[:2], "big")
+    if len(data) < 2 + n:
+        return None, b""
+    try:
+        header = json.loads(data[2:2 + n].decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None, b""
+    return (header, bytes(data[2 + n:])) if isinstance(header, dict) else (None, b"")
 
 
 class WebSocketHub:
@@ -48,6 +63,7 @@ class WebSocketHub:
         self.fanout = MediaFanout()                # H.264 packets → dashboards (per-viewer backpressure)
         self.mirror_sessions: Dict[str, ScrcpySession] = {}  # device_id -> running fast USB mirror
         self._fast_mirror_failed: Dict[str, float] = {}      # device_id -> when fast mirroring last failed
+        self._cam_codec: Dict[str, str] = {}                  # device_id -> "h264" / "jpeg" (live camera format)
         self.input_router = InputRouter(adb_bridge, device_manager, self.mirror_sessions)
         self.pb = None  # PowerBoosters gateway, attached in main.py
 
@@ -117,6 +133,8 @@ class WebSocketHub:
                 if message["type"] == "websocket.disconnect":
                     break
                 if message.get("bytes") is not None:
+                    if role == "device" and await self.handle_device_binary(websocket, message["bytes"]):
+                        continue
                     if role == "device" and self.pb and self.relays:
                         me = self.relays.for_socket(websocket)
                         if me and await self.pb.handle_chunk(websocket, me.relay_id, message["bytes"]):
@@ -208,8 +226,12 @@ class WebSocketHub:
             dev = self.device_manager.get_device(device_id)
             comp_sock = self._get_companion_socket(dev)
             if comp_sock:
+                cam_payload = {"lens": lens}
+                if msg_type == "START_CAMERA_STREAM":
+                    # hardware H.264 only for browsers that can decode it; others keep the JPEG preview
+                    cam_payload["codec"] = "h264" if self.fanout.wants_h264(websocket) else "jpeg"
                 try:
-                    await comp_sock.send_json({"type": msg_type, "payload": {"lens": lens}})
+                    await comp_sock.send_json({"type": msg_type, "payload": cam_payload})
                 except Exception as e:
                     print(f"[WebSocketHub] Error dispatching {msg_type}: {e}")
             else:
@@ -223,7 +245,11 @@ class WebSocketHub:
                 await websocket.send_json({"type": "CAMERA_SAVE_STATE", "device_id": device_id,
                                            "payload": {"saving": False, "error": "ffmpeg is not installed on the laptop"}})
             elif device_id and device_id not in self.cam_recorders:
-                self.cam_recorders[device_id] = CamRecorder(dev.name if dev else device_id, folder=device_capture_dir(dev or device_id))
+                folder = device_capture_dir(dev or device_id)
+                if self._cam_codec.get(device_id) == "h264":   # copy the phone's H.264: stop = close the file
+                    self.cam_recorders[device_id] = H264Recorder(dev.name if dev else device_id, folder=folder)
+                else:
+                    self.cam_recorders[device_id] = CamRecorder(dev.name if dev else device_id, folder=folder)
                 await self.broadcast_to_dashboards({"type": "CAMERA_SAVE_STATE", "device_id": device_id,
                                                     "payload": {"saving": True}})
 
@@ -235,6 +261,8 @@ class WebSocketHub:
             _d = self._device_for_companion(device_id)
             did = _d.id if _d else device_id
             rec = self.cam_recorders.get(did)
+            if msg_type == "CAMERA_FRAME":
+                self._cam_codec[did] = "jpeg"
             if msg_type == "CAMERA_FRAME" and rec and payload.get("data_base64"):
                 try:
                     rec.submit(base64.b64decode(payload["data_base64"]))  # never blocks the event loop
@@ -772,6 +800,28 @@ class WebSocketHub:
                 await asyncio.sleep(min(5.0, 0.5 * failing))
 
         print(f"[WebSocketHub] Screen stream stopped for {dev.name if dev else device_id}")
+
+    async def handle_device_binary(self, websocket, data: bytes) -> bool:
+        """Hardware-H.264 camera packets from a phone → H.264 viewers (stream '<device>#cam') and the recorder.
+        Returns False for every other binary frame (file transfers, PowerBoosters chunks…)."""
+        header, payload = parse_device_binary(data)
+        if not header or header.get("type") != "CAMERA_PKT" or not self.relays:
+            return False
+        me = self.relays.for_socket(websocket)
+        if me is None:
+            return True                                     # not a registered phone: drop
+        dev = self._device_for_companion(me.relay_id)
+        did = dev.id if dev else me.relay_id
+        try:
+            kind, pts = int(header.get("k", 3)), int(header.get("pts", 0))
+        except (TypeError, ValueError):
+            return True
+        self._cam_codec[did] = "h264"
+        await self.fanout.publish(f"{did}#cam", VideoPacket(pts, kind == 1, kind == 2, payload))
+        rec = self.cam_recorders.get(did)
+        if rec is not None and hasattr(rec, "submit_video"):
+            rec.submit_video(kind, pts, payload)
+        return True
 
     async def _run_fast_mirror(self, dev, device_id: str, tell) -> bool:
         """Hardware-H.264 mirror over USB until it ends. False = could not start (caller uses snapshots)."""

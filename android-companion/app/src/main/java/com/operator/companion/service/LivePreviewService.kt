@@ -24,6 +24,7 @@ import com.operator.companion.network.CompanionWebSocketClient
 class LivePreviewService : Service() {
     private val TAG = "LivePreviewService"
     private var streamer: CameraPreviewStreamer? = null
+    private var h264: CameraH264Streamer? = null
     private var audio: PreviewAudioStreamer? = null
     private var errorNotified = false   // so onDestroy doesn't overwrite an error reason with a plain "off"
     private var micInForeground = false // FGS actually holds the microphone type (else Android 14+ records silence)
@@ -32,6 +33,9 @@ class LivePreviewService : Service() {
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
         @Volatile private var active: CameraPreviewStreamer? = null
+        @Volatile private var activeH264: CameraH264Streamer? = null
+        // "h264" when the laptop can decode hardware H.264 (newer servers), else the JPEG frames old ones expect
+        @Volatile private var desiredCodec: String = "jpeg"
         // Latest requested lens; read when the camera actually comes up, so a lens flip that arrives
         // before the service has finished starting is still applied (no silent no-op).
         @Volatile private var desiredLens: String = "back"
@@ -39,7 +43,12 @@ class LivePreviewService : Service() {
         private fun norm(lens: String) = if (lens.lowercase() == "front") "front" else "back"
 
         /** Set the lens the preview should use; honoured whenever the camera next (re)starts. */
-        fun setLens(lens: String) { desiredLens = norm(lens); active?.switchLens(desiredLens) }
+        fun setLens(lens: String) { desiredLens = norm(lens); active?.switchLens(desiredLens); activeH264?.switchLens(desiredLens) }
+
+        fun setCodec(codec: String) { desiredCodec = if (codec == "h264") "h264" else "jpeg" }
+
+        /** A new viewer joined: send a key frame now instead of waiting up to 2 s. */
+        fun requestKeyFrame() { activeH264?.requestKeyFrame() }
 
         /** Start (or re-arm) the foreground camera service. The lens comes from the latest setLens(). */
         fun start(ctx: Context) {
@@ -60,7 +69,21 @@ class LivePreviewService : Service() {
         if (!startInForeground()) {           // could not enter foreground → never open the camera (no leak)
             stopSelf(); return START_NOT_STICKY
         }
-        if (streamer == null) {
+        val wantH264 = desiredCodec == "h264"
+        if (wantH264 && streamer != null) { runCatching { streamer?.stop() }; streamer = null; active = null }
+        if (!wantH264 && h264 != null) { runCatching { h264?.stop() }; h264 = null; activeH264 = null }
+        if (wantH264 && h264 == null) {
+            h264 = CameraH264Streamer(applicationContext,
+                onPacket = { kind, pts, data -> CompanionWebSocketClient.activeInstance?.sendCameraPacket(kind, pts, data) },
+                onState = { info -> CompanionWebSocketClient.activeInstance?.notifyCameraState(true, null, desiredLens, info) },
+                onError = { msg ->
+                    errorNotified = true
+                    CompanionWebSocketClient.activeInstance?.notifyCameraState(false, msg)
+                    stopSelf()
+                },
+                queueBytes = { CompanionWebSocketClient.activeInstance?.queueBytes() ?: 0L }).also { activeH264 = it }
+        }
+        if (!wantH264 && streamer == null) {
             streamer = CameraPreviewStreamer(applicationContext,
                 onFrame = { b64, l, w, h -> CompanionWebSocketClient.activeInstance?.sendCameraFrame(b64, l, w, h) },
                 onError = { msg ->
@@ -70,6 +93,7 @@ class LivePreviewService : Service() {
                 }).also { active = it }
         }
         streamer?.start(desiredLens)          // idempotent; uses the latest requested lens
+        h264?.start(desiredLens)
         if (audio == null) audio = PreviewAudioStreamer(applicationContext) { b64 ->
             CompanionWebSocketClient.activeInstance?.sendCameraAudio(b64, PreviewAudioStreamer.SAMPLE_RATE)
         }
@@ -99,6 +123,8 @@ class LivePreviewService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         runCatching { streamer?.stop() }
+        runCatching { h264?.stop() }
+        h264 = null; activeH264 = null
         runCatching { audio?.stop() }
         audio = null
         streamer = null; active = null

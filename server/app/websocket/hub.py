@@ -13,7 +13,9 @@ from .media_fanout import MediaFanout
 from ..services.input_router import InputRouter
 from ..services.device_manager import DeviceManager
 from ..services.cam_record import display_name
-from ..services.adb_bridge import ADBBridge, UnsupportedText
+from ..services.adb_bridge import ADBBridge, InputRejected, UnsupportedText
+from ..services.storage_service import StorageError
+from ..services.remote_control import COMPANION_MISSING
 from ..services.ai_agent import AIAgentOperator
 from ..models.schemas import ApprovalDecision
 
@@ -159,7 +161,7 @@ class WebSocketHub:
                 _rd = self._device_for_companion(rid)
                 _rkey = _rd.id if _rd else rid
                 if _rkey in self.cam_recorders:
-                    await self._finalize_recording(_rkey)  # phone dropped mid-recording → save what we have
+                    self._finalize_recording_soon(_rkey)  # phone dropped mid-recording → save what we have
                 print(f"[WebSocketHub] Companion {rid} disconnected")
             else:
                 print(f"[WebSocketHub] Client disconnected. Dashboards remaining: {len(self.dashboard_clients)}")
@@ -226,7 +228,7 @@ class WebSocketHub:
                                                     "payload": {"saving": True}})
 
         elif msg_type == "STOP_CAMERA_SAVE":
-            await self._finalize_recording(device_id)
+            self._finalize_recording_soon(device_id)  # never stall this socket while ffmpeg finishes
 
         elif msg_type in ("CAMERA_FRAME", "CAMERA_STREAM_STATE", "CAMERA_AUDIO"):
             # From the phone → fan out to every dashboard watching this device.
@@ -244,7 +246,7 @@ class WebSocketHub:
                 except Exception:
                     pass
             if msg_type == "CAMERA_STREAM_STATE" and payload.get("active") is False and did in self.cam_recorders:
-                await self._finalize_recording(did)  # stream ended → close the file
+                self._finalize_recording_soon(did)  # stream ended → close the file (in the background)
             await self.broadcast_to_dashboards({"type": msg_type, "device_id": did, "payload": payload})
 
         elif msg_type == "STOP_SCREEN_STREAM":
@@ -290,7 +292,10 @@ class WebSocketHub:
                 text = payload.get("text", "")
                 try:
                     await self.input_router.text(dev.id, text)
-                except UnsupportedText as e:
+                except StorageError as e:   # the companion refused it (e.g. no text field focused)
+                    await websocket.send_json({"type": "INPUT_ERROR", "device_id": device_id,
+                                               "payload": {"message": e.message}})
+                except (UnsupportedText, InputRejected) as e:
                     await websocket.send_json({"type": "INPUT_ERROR", "device_id": device_id,
                                                "payload": {"message": str(e)}})
 
@@ -838,10 +843,18 @@ class WebSocketHub:
                 self.dashboard_clients.discard(client)
         await asyncio.gather(*(send(c) for c in clients))
 
+    def _finalize_recording_soon(self, device_id: Optional[str]) -> None:
+        """Detach the recorder now (no more frames go to it) and finish the file in the background."""
+        rec = self.cam_recorders.pop(device_id, None) if device_id else None
+        if rec:
+            asyncio.create_task(self._close_recording(device_id, rec))
+
     async def _finalize_recording(self, device_id: Optional[str]):
         rec = self.cam_recorders.pop(device_id, None) if device_id else None
-        if not rec:
-            return
+        if rec:
+            await self._close_recording(device_id, rec)
+
+    async def _close_recording(self, device_id: str, rec):
         path = await asyncio.get_event_loop().run_in_executor(None, rec.close)
         await self.broadcast_to_dashboards({"type": "CAMERA_SAVE_STATE", "device_id": device_id,
                                             "payload": {"saving": False, "path": path,
@@ -896,6 +909,11 @@ class WebSocketHub:
         return self._capture_locks.setdefault(serial, asyncio.Lock())
 
     async def _capture_photo_adb_fallback(self, device_id: str, serial: str, lens: str):
+        if not await self.adb.companion_installed(serial):
+            await self.broadcast_to_dashboards({"type": "PHOTO_CAPTURED", "device_id": device_id, "payload": {
+                "success": False, "error": COMPANION_MISSING, "filename": "", "local_path": "", "url": "",
+                "device_id": device_id, "lens": lens}})
+            return
         async with self._capture_lock(serial):
             self._adb_capture(device_id, 120)
             dest = await self.adb.capture_headless_photo_adb(serial, lens=lens, timeout=25.0)
@@ -917,6 +935,11 @@ class WebSocketHub:
         })
 
     async def _record_video_adb_fallback(self, device_id: str, serial: str, lens: str, duration_sec: int):
+        if not await self.adb.companion_installed(serial):
+            await self.broadcast_to_dashboards({"type": "VIDEO_RECORDED", "device_id": device_id, "payload": {
+                "success": False, "error": COMPANION_MISSING, "filename": "", "local_path": "", "url": "",
+                "device_id": device_id, "lens": lens, "duration_sec": duration_sec}})
+            return
         if not hasattr(self, "_video_stop"):
             self._video_stop: Dict[str, asyncio.Event] = {}
         stop = asyncio.Event()
@@ -969,6 +992,8 @@ class WebSocketHub:
                 self.pending_photo_futures.pop(dev.id, None)
         if not on_usb:
             return {"success": False, "error": f"{dev.name} is offline (not on USB and the companion app is not connected)"}
+        if not await self.adb.companion_installed(dev.serial):
+            return {"success": False, "error": COMPANION_MISSING}
 
         async with self._capture_lock(dev.serial):
 
@@ -1008,6 +1033,8 @@ class WebSocketHub:
                 self.pending_video_futures.pop(dev.id, None)
         if not on_usb:
             return {"success": False, "error": f"{dev.name} is offline (not on USB and the companion app is not connected)"}
+        if not await self.adb.companion_installed(dev.serial):
+            return {"success": False, "error": COMPANION_MISSING}
 
         async with self._capture_lock(dev.serial):
 

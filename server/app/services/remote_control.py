@@ -11,7 +11,9 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models.schemas import AppInfo, UINode
-from .adb_bridge import ADBBridge, adb_typable
+from .adb_bridge import ADBBridge, InputRejected, adb_typable, normalize_text
+
+COMPANION_MISSING = "Install the Operator Companion app on this phone to use the camera"
 from .relay import RelayClient, RelayRegistry
 from .storage_service import StorageError
 
@@ -72,14 +74,22 @@ class DeviceControl(ADBBridge):
         return bool(data.get("ok", True))
 
     async def inject_text(self, serial: str, text: str) -> bool:
+        text = normalize_text(text)
         c = self._relay_for(serial)
         if c is None and not adb_typable(text):
             # adb can only type ASCII: on USB too, let the companion type Hindi, accents and emoji
             c = self._companion_alt(serial)
         if c is None:
             return await super().inject_text(serial, text)
-        data, _ = await self._ctl(c, "ctl.text", text=text)
-        return bool(data.get("ok", True))
+        lines = text.split("\n")
+        for i, line in enumerate(lines):           # the companion inserts text: a newline must press Enter
+            if line:
+                data, _ = await self._ctl(c, "ctl.text", text=line)
+                if not data.get("ok", True):
+                    raise InputRejected("The phone did not accept the text. Tap a text field on the phone first.")
+            if i < len(lines) - 1:
+                await self._ctl(c, "ctl.key", key="ENTER")
+        return True
 
     # ---------- screen ----------
     async def capture_screen(self, serial: str, scale_width: int = 540, quality: int = 70) -> Tuple[bytes, str]:

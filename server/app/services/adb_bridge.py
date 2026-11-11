@@ -30,6 +30,15 @@ class UnsupportedText(Exception):
     """`adb shell input text` can only type printable ASCII; anything else would be silently dropped."""
 
 
+class InputRejected(Exception):
+    """The phone received the input but refused it (e.g. no text field has focus)."""
+
+
+def normalize_text(text: str) -> str:
+    """Windows clients send \r\n; adb/scrcpy/companion all expect \n. Tabs become spaces."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+
+
 class UiDumpUnavailable(Exception):
     """uiautomator could not read the screen (it waits for an idle screen, which animations never give)."""
 
@@ -290,6 +299,7 @@ class ADBBridge:
     async def inject_text(self, serial: str, text: str) -> bool:
         if not text:
             return True
+        text = normalize_text(text)
         if not adb_typable(text):
             raise UnsupportedText("Non-English text and emoji need the companion app connected")
         lines = text.split("\n")

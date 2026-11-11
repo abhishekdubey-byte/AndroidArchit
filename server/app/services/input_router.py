@@ -10,7 +10,7 @@ import time
 from typing import Callable, Dict, Optional
 
 from ..config import ADB_PATH, FAST_MIRROR
-from .adb_bridge import adb_typable
+from .adb_bridge import adb_typable, normalize_text
 from .scrcpy_protocol import (ACTION_DOWN, ACTION_MOVE, ACTION_UP, KEYCODES, key_event, scrcpy_can_type,
                               text_events, touch_event)
 from .scrcpy_session import ScrcpySession
@@ -158,6 +158,7 @@ class InputRouter:
     async def text(self, device_id: str, text: str) -> str:
         """Raises UnsupportedText when nothing connected can type it."""
         dev = self._device(device_id)
+        text = normalize_text(text)
         if not text:
             return "scrcpy"
         if scrcpy_can_type(text):

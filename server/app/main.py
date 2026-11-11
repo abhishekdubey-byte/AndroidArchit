@@ -10,6 +10,7 @@ from .services.adb_bridge import ADBBridge
 from .services.device_manager import DeviceManager
 from .services.ai_agent import AIAgentOperator
 from .services.storage_service import StorageService, StorageError
+from .services.adb_bridge import InputRejected, UiDumpUnavailable, UnsupportedText
 from .services.relay import RelayRegistry, RelayStorage
 from .services.remote_control import DeviceControl
 from .security import AccessGuard, get_token
@@ -138,6 +139,18 @@ app.include_router(create_permissions_router(PermissionService(device_manager, w
 @app.exception_handler(BackupError)
 async def backup_error_handler(request: Request, exc: BackupError):
     return JSONResponse(status_code=exc.status, content={"detail": exc.message})
+
+@app.exception_handler(UnsupportedText)
+async def unsupported_text_handler(request: Request, exc: UnsupportedText):
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+@app.exception_handler(UiDumpUnavailable)
+async def ui_dump_handler(request: Request, exc: UiDumpUnavailable):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+@app.exception_handler(InputRejected)
+async def input_rejected_handler(request: Request, exc: InputRejected):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 @app.exception_handler(StorageError)
 async def storage_error_handler(request: Request, exc: StorageError):

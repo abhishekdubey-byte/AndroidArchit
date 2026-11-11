@@ -11,6 +11,8 @@ from .device_manager import DeviceManager
 from ..config import DOWNLOADS_DIR, SCREENSHOT_DIR
 
 class AIAgentOperator:
+    FOREGROUND_BUDGET = 6.0  # seconds an "open <app>" step waits for the app to come to the front
+
     def __init__(self, device_manager: DeviceManager, adb_bridge: ADBBridge):
         self.device_manager = device_manager
         self.adb = adb_bridge
@@ -469,7 +471,7 @@ class AIAgentOperator:
                     step.status = "done"
 
                 elif action == "phone_audio_bridge":
-                    step.result = "Remote audio bridge active. Audio routed to laptop speakers."
+                    step.result = "Call placed. Live laptop audio is not available yet: talk on the phone."
                     step.status = "done"
 
                 elif action == "phone_call_monitor":
@@ -553,16 +555,15 @@ class AIAgentOperator:
                     if not match:
                         raise RuntimeError(f"No app named '{wanted}' is installed on {dev.name}")
                     await self.adb.launch_package(serial, match.package_name)
-                    fg = None
-                    for _ in range(6):  # up to 3 s for the app to come to the front
-                        await asyncio.sleep(0.5)
-                        fg = await self.adb.foreground_package(serial)
-                        if fg == match.package_name:
-                            break
+                    fg = await self._wait_for_foreground(serial, match.package_name)
                     if fg != match.package_name:
-                        raise RuntimeError(
-                            f"Tried to open {match.app_name} but {fg or 'another app'} stayed in front. On MIUI allow "
-                            "'Display pop-up windows while running in the background' for Operator Companion.")
+                        if dev.transport == "adb":
+                            hint = ("The phone may be locked, or the app is still starting; unlock it and try again.")
+                        else:
+                            hint = ("On MIUI allow 'Display pop-up windows while running in the background' "
+                                    "for Operator Companion.")
+                        raise RuntimeError(f"Tried to open {match.app_name} but {fg or 'another app'} stayed in "
+                                           f"front. {hint}")
                     step.result = f"Opened {match.app_name} ({match.package_name})"
                     step.status = "done"
 
@@ -592,7 +593,28 @@ class AIAgentOperator:
         except Exception as e:
             task.status = "failed"
             task.result_summary = f"Execution error: {str(e)}"
+            for s in task.steps:   # the step that raised must not keep showing "executing"
+                if s.status == "executing":
+                    s.status = "failed"
+                    s.result = str(e)
             await self._emit("TASK_UPDATE", task)
+
+    async def _wait_for_foreground(self, serial: str, package: str) -> Optional[str]:
+        """Poll the app in front until it is `package` or FOREGROUND_BUDGET seconds pass (each query bounded)."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.FOREGROUND_BUDGET
+        fg = None
+        while True:
+            await asyncio.sleep(0.4)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return fg
+            try:
+                fg = await asyncio.wait_for(self.adb.foreground_package(serial), min(2.0, remaining))
+            except Exception:
+                fg = None
+            if fg == package or loop.time() >= deadline:
+                return fg
 
     def handle_approval_response(self, task_id: str, decision: ApprovalDecision):
         self.approval_decisions[task_id] = decision

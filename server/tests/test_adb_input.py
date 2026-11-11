@@ -106,7 +106,9 @@ class TestDeviceControlText(unittest.TestCase):
     def test_mixed_text_goes_to_companion_when_connected(self):
         ctl = FakeDeviceControl(usb=True, companion=True)
         run(ctl.inject_text("s", "hi café\nok"))
-        self.assertEqual(ctl.companion_texts, ["hi café\nok"])
+        # the companion inserts text, so the newline is sent as an Enter key between the two lines
+        self.assertEqual(ctl.companion_texts, ["hi café", "ok"])
+        self.assertIn(("ctl.key", {"key": "ENTER"}), ctl.client.calls)
         self.assertEqual(ctl.adb_commands, [])
 
     def test_ascii_on_usb_stays_on_adb(self):

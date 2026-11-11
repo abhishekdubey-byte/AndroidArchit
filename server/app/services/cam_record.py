@@ -43,7 +43,8 @@ def display_name(path: Optional[str]) -> Optional[str]:
 
 
 class CamRecorder:
-    QUEUE_MAX = 240  # ~30 s of frames at 8 fps; beyond that the oldest video frames are dropped
+    QUEUE_MAX = 240      # ~13 s of video+audio items (8 fps + 10 audio chunks/s); then oldest video frames drop
+    DRAIN_TIMEOUT = 60.0  # seconds close() waits for queued frames before killing a stuck ffmpeg
 
     def __init__(self, device_name: str, fps: int = FPS, folder: Optional[Path] = None):
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (device_name or "device"))[:40]
@@ -115,8 +116,20 @@ class CamRecorder:
         if not getattr(self, "_accepting", False):
             return
         self._accepting = False
-        self._q.put(None)
-        self._worker.join(timeout=60)
+        try:
+            self._q.put(None, timeout=self.DRAIN_TIMEOUT)
+        except queue.Full:
+            pass
+        self._worker.join(timeout=self.DRAIN_TIMEOUT)
+        if self._worker.is_alive():
+            # ffmpeg stopped reading: kill it so the blocked pipe write fails and the worker can exit
+            proc = getattr(self, "_proc", None)
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._worker.join(timeout=2)
 
     def _start(self, w: int, h: int):
         w -= w % 2

@@ -45,7 +45,7 @@ class FakeDM:
 
 
 def make_agent(fg="com.miui.home", fg_after_launch=None, storage_percent=50, battery_temp=32.0):
-    dev = SimpleNamespace(id="d", serial="s", name="Phone",
+    dev = SimpleNamespace(id="d", serial="s", name="Phone", transport="adb", status="online",
                           battery=SimpleNamespace(level=90, charging=True, temperature=battery_temp),
                           storage=SimpleNamespace(used_gb=10.0, total_gb=50.0, percent=storage_percent))
     bridge = FakeBridge(launcher=["com.android.settings"], fg=fg, fg_after_launch=fg_after_launch)

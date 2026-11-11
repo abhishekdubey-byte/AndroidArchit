@@ -739,7 +739,7 @@ class ControlCentreApp {
     } else {
       this.live.saving = false;
       if (btn) { btn.classList.remove("rec"); btn.innerText = "⏺ Save"; }
-      if (payload.name) this.setCaptureStatus("ok", "Saved to this laptop: server/storage/" + (payload.path && payload.path.includes("/storage/") ? payload.path.split("/storage/").pop() : "downloads/" + payload.name));
+      if (payload.name) { const p = (payload.path || "").replace(/\\/g, "/"); this.setCaptureStatus("ok", "Saved to this laptop: server/storage/" + (p.includes("/storage/") ? p.split("/storage/").pop() : "downloads/" + payload.name)); }
       else this.setCaptureStatus("err", "Nothing was recorded.");
     }
   }
@@ -1807,7 +1807,7 @@ class ControlCentreApp {
       const d = await r.json();
       if (d.status === "success") {
         this.setCallStateChip("Dialing…", "#06b6d4");
-        this.showToast(`📞 Dialing ${number} on ${this.activeDevice.model}. Use Listen Live to talk.`, "success");
+        this.showToast(`📞 Dialing ${number} on ${this.activeDevice.model}. Talk on the phone (live laptop audio is coming soon).`, "success");
       } else this.showToast("Could not place the call.", "error");
     } catch (e) { this.showToast("Could not reach the phone.", "error"); }
   }

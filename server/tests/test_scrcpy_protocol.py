@@ -102,3 +102,9 @@ class TestControlMessages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRealEncoder(unittest.TestCase):
+    def test_sps_from_real_scrcpy_session(self):
+        # first config packet captured from scrcpy 2.7 on a Redmi Note 5 Pro (max_size=1280)
+        self.assertEqual(sps_dimensions((FIXTURES / "scrcpy_config_real.h264").read_bytes()), (640, 1280))

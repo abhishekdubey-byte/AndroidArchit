@@ -110,6 +110,14 @@ class DeviceControl(ADBBridge):
         data, _ = await self._ctl(c, "ctl.ui", timeout=20)
         return [UINode(**n) for n in data.get("nodes", [])]
 
+    async def foreground_package(self, serial: str) -> Optional[str]:
+        c = self._relay_for(serial)
+        if c is None:
+            return await super().foreground_package(serial)
+        data, _ = await self._ctl(c, "ctl.ui", timeout=12)  # accessibility root node = app in front
+        nodes = data.get("nodes") or []
+        return (nodes[0].get("package") or None) if nodes else None
+
     # ---------- apps / calls ----------
     async def get_installed_apps(self, serial: str) -> List[AppInfo]:
         c = self._relay_for(serial)

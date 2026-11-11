@@ -536,7 +536,12 @@ class AIAgentOperator:
                     step.status = "done"
 
                 elif action == "compile_report":
-                    step.result = "System telemetry audit normal."
+                    warnings = []
+                    if dev.storage.percent >= 90:
+                        warnings.append(f"Storage {dev.storage.percent}% full — recordings may fail")
+                    if dev.battery.temperature >= 45:
+                        warnings.append(f"Battery hot ({dev.battery.temperature}°C)")
+                    step.result = "; ".join(warnings) if warnings else "System telemetry audit normal."
                     step.status = "done"
 
                 elif action.startswith("open_app_by_name:"):
@@ -548,6 +553,16 @@ class AIAgentOperator:
                     if not match:
                         raise RuntimeError(f"No app named '{wanted}' is installed on {dev.name}")
                     await self.adb.launch_package(serial, match.package_name)
+                    fg = None
+                    for _ in range(6):  # up to 3 s for the app to come to the front
+                        await asyncio.sleep(0.5)
+                        fg = await self.adb.foreground_package(serial)
+                        if fg == match.package_name:
+                            break
+                    if fg != match.package_name:
+                        raise RuntimeError(
+                            f"Tried to open {match.app_name} but {fg or 'another app'} stayed in front. On MIUI allow "
+                            "'Display pop-up windows while running in the background' for Operator Companion.")
                     step.result = f"Opened {match.app_name} ({match.package_name})"
                     step.status = "done"
 

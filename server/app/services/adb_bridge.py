@@ -39,6 +39,21 @@ def adb_typable(text: str) -> bool:
     return all(c == "\n" or " " <= c <= "~" for c in text)
 
 
+LAUNCHER_QUERY = ("cmd package query-activities --brief -a android.intent.action.MAIN "
+                  "-c android.intent.category.LAUNCHER")
+_LAUNCHER_LINE = re.compile(r"^([A-Za-z][\w.]*)/\S+$")
+
+
+def parse_launcher_packages(output: str) -> List[str]:
+    """Packages from `cmd package query-activities --brief` ('pkg/.Activity' lines), de-duplicated, in order."""
+    seen: List[str] = []
+    for line in (output or "").splitlines():
+        m = _LAUNCHER_LINE.match(line.strip())
+        if m and m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
 class ADBBridge:
     UI_DUMP_TIMEOUT = 12.0  # seconds; uiautomator never returns on animated screens
 
@@ -295,16 +310,19 @@ class ADBBridge:
     async def launch_package(self, serial: str, package_name: str) -> bool:
         cmd = f"monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
         out = await self.run_device_shell(serial, cmd)
-        return "Events injected" in out or "No activities" not in out
+        return "Events injected: 1" in out
+
+    async def foreground_package(self, serial: str) -> Optional[str]:
+        """Package of the window that has focus right now (None if it cannot be read)."""
+        out = await self.run_device_shell(serial, "dumpsys window windows | grep -E 'mCurrentFocus'")
+        m = re.search(r"mCurrentFocus=Window\{\S+ u\d+ ([A-Za-z][\w.]*)/", out or "")
+        return m.group(1) if m else None
 
     async def get_installed_apps(self, serial: str) -> List[AppInfo]:
-        out = await self.run_device_shell(serial, "pm list packages -3; pm list packages | grep -E 'whatsapp|instagram|chrome|camera'")
-        packages = set()
-        for line in out.splitlines():
-            line = line.strip()
-            if line.startswith("package:"):
-                pkg = line.split(":", 1)[1]
-                packages.add(pkg)
+        third_party_out = await self.run_device_shell(serial, "pm list packages -3")
+        third_party = {l.strip().split(":", 1)[1] for l in third_party_out.splitlines() if l.strip().startswith("package:")}
+        # Everything with a home-screen icon, built-in apps (Settings, Camera…) included
+        packages = parse_launcher_packages(await self.run_device_shell(serial, LAUNCHER_QUERY)) or sorted(third_party)
 
         friendly_map = {
             "com.whatsapp": "WhatsApp",
@@ -316,16 +334,21 @@ class ADBBridge:
             "com.android.camera": "Camera",
             "com.google.android.apps.photos": "Google Photos",
             "com.google.android.youtube": "YouTube",
-            "com.google.android.apps.maps": "Google Maps"
+            "com.google.android.apps.maps": "Google Maps",
+            "com.android.settings": "Settings",
+            "com.facebook.katana": "Facebook",
+            "com.facebook.orca": "Messenger",
+            "com.android.vending": "Play Store",
+            "com.miui.securitycenter": "Security",
         }
 
         apps = []
-        for pkg in sorted(list(packages)):
+        for pkg in sorted(packages):
             app_name = friendly_map.get(pkg, pkg.split('.')[-1].capitalize())
             apps.append(AppInfo(
                 package_name=pkg,
                 app_name=app_name,
-                is_system=False
+                is_system=pkg not in third_party
             ))
         return apps
 

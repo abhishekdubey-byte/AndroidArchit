@@ -11,7 +11,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models.schemas import AppInfo, UINode
-from .adb_bridge import ADBBridge
+from .adb_bridge import ADBBridge, adb_typable
 from .relay import RelayClient, RelayRegistry
 from .storage_service import StorageError
 
@@ -39,6 +39,11 @@ class DeviceControl(ADBBridge):
         if client is None:
             raise StorageError(f"{dev.name} is offline: not on USB/ADB and its companion app is not connected", 503)
         return client
+
+    def _companion_alt(self, serial: str) -> Optional[RelayClient]:
+        """The phone's connected companion app even while it is on USB (None if not connected)."""
+        dev = self.dm.get_device(serial)
+        return self.relays.get(dev.relay_id) if dev is not None and dev.relay_id else None
 
     @staticmethod
     async def _ctl(client: RelayClient, op: str, timeout: float = 20.0, **args) -> Tuple[Dict[str, Any], bytes]:
@@ -68,6 +73,9 @@ class DeviceControl(ADBBridge):
 
     async def inject_text(self, serial: str, text: str) -> bool:
         c = self._relay_for(serial)
+        if c is None and not adb_typable(text):
+            # adb can only type ASCII: on USB too, let the companion type Hindi, accents and emoji
+            c = self._companion_alt(serial)
         if c is None:
             return await super().inject_text(serial, text)
         data, _ = await self._ctl(c, "ctl.text", text=text)

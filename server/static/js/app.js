@@ -155,6 +155,10 @@ class ControlCentreApp {
         this.handleCapabilitiesUpdated(msg.payload || msg.data);
         break;
 
+      case "INPUT_ERROR":
+        this.showToast((msg.payload && msg.payload.message) || "The phone could not type that text", "error");
+        break;
+
       case "DEVICE_ERROR":
         this.handleDeviceError(msg.payload || msg.data, msg.device_id);
         break;

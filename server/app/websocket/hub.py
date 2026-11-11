@@ -8,7 +8,7 @@ from typing import Dict, Set, Any, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 from ..config import DOWNLOADS_DIR, device_capture_dir, download_url
 from ..services.device_manager import DeviceManager
-from ..services.adb_bridge import ADBBridge
+from ..services.adb_bridge import ADBBridge, UnsupportedText
 from ..services.ai_agent import AIAgentOperator
 from ..models.schemas import ApprovalDecision
 
@@ -267,7 +267,11 @@ class WebSocketHub:
             dev = self.device_manager.get_device(device_id)
             if dev:
                 text = payload.get("text", "")
-                await self.adb.inject_text(dev.serial, text)
+                try:
+                    await self.adb.inject_text(dev.serial, text)
+                except UnsupportedText as e:
+                    await websocket.send_json({"type": "INPUT_ERROR", "device_id": device_id,
+                                               "payload": {"message": str(e)}})
 
         # 3. AI Operator Tasks
         elif msg_type == "SUBMIT_TASK":

@@ -8,7 +8,7 @@ from ..models.schemas import (
     AppInfo, Task, ApprovalDecision, UINode
 )
 from ..services.device_manager import DeviceManager
-from ..services.adb_bridge import ADBBridge
+from ..services.adb_bridge import ADBBridge, UiDumpUnavailable, UnsupportedText
 from ..services.ai_agent import AIAgentOperator
 from ..config import DOWNLOADS_DIR, UPLOADS_DIR, download_url
 
@@ -103,7 +103,10 @@ def create_router(device_manager: DeviceManager, adb_bridge: ADBBridge, ai_agent
     @router.post("/devices/{device_id}/action/text")
     async def inject_text(device_id: str, action: TextAction):
         dev = resolve_device(device_id)
-        await adb_bridge.inject_text(dev.serial, action.text)
+        try:
+            await adb_bridge.inject_text(dev.serial, action.text)
+        except UnsupportedText as e:
+            raise HTTPException(status_code=422, detail=str(e))
         return {"status": "success"}
 
     # 4. App Management
@@ -124,7 +127,10 @@ def create_router(device_manager: DeviceManager, adb_bridge: ADBBridge, ai_agent
     @router.get("/devices/{device_id}/ui", response_model=List[UINode])
     async def get_ui_hierarchy(device_id: str):
         dev = resolve_device(device_id)
-        return await adb_bridge.dump_ui_hierarchy(dev.serial)
+        try:
+            return await adb_bridge.dump_ui_hierarchy(dev.serial)
+        except UiDumpUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
     # 6. File Manager
     @router.get("/devices/{device_id}/files")

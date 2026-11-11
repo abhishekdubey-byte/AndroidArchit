@@ -26,7 +26,22 @@ KEY_MAP = {
     "SLEEP": 223
 }
 
+class UnsupportedText(Exception):
+    """`adb shell input text` can only type printable ASCII; anything else would be silently dropped."""
+
+
+class UiDumpUnavailable(Exception):
+    """uiautomator could not read the screen (it waits for an idle screen, which animations never give)."""
+
+
+def adb_typable(text: str) -> bool:
+    """True iff every character can be typed by `adb shell input text` (printable ASCII or newline)."""
+    return all(c == "\n" or " " <= c <= "~" for c in text)
+
+
 class ADBBridge:
+    UI_DUMP_TIMEOUT = 12.0  # seconds; uiautomator never returns on animated screens
+
     def __init__(self, adb_path: str = ADB_PATH):
         self.adb_path = adb_path
         self._screen_cache: Dict[str, Tuple[float, bytes, str]] = {}
@@ -260,6 +275,8 @@ class ADBBridge:
     async def inject_text(self, serial: str, text: str) -> bool:
         if not text:
             return True
+        if not adb_typable(text):
+            raise UnsupportedText("Non-English text and emoji need the companion app connected")
         lines = text.split("\n")
         for i, line in enumerate(lines):
             if line:
@@ -316,15 +333,21 @@ class ADBBridge:
         xml_path = "/sdcard/window_dump.xml"
         # Remove the old dump first (a failed dump must not return a stale screen) and never wait forever:
         # uiautomator blocks until the screen is idle, which never happens on animations / playing video.
+        idle_msg = ("The screen never went idle (animations or video), so it could not be read. "
+                    "Turn on the companion app's Accessibility to read any screen.")
         try:
-            await asyncio.wait_for(self.run_device_shell(serial, f"rm -f {xml_path}; uiautomator dump {xml_path}"), 12)
+            out = await asyncio.wait_for(
+                self.run_device_shell(serial, f"rm -f {xml_path}; uiautomator dump {xml_path}"), self.UI_DUMP_TIMEOUT)
         except asyncio.TimeoutError:
             await self.run_device_shell(serial, "pkill -f uiautomator 2>/dev/null; killall uiautomator 2>/dev/null")
-            return []
+            raise UiDumpUnavailable(idle_msg)
+        if "ERROR" in (out or ""):
+            raise UiDumpUnavailable(idle_msg)
         xml_content = await self.run_device_shell(serial, f"cat {xml_path} 2>/dev/null")
-        
+
         if not xml_content or not xml_content.startswith("<?xml"):
-            return []
+            raise UiDumpUnavailable("The phone did not return a screen layout. Try again, or turn on the "
+                                    "companion app's Accessibility.")
 
         def parse_node(elem: ET.Element, idx: int = 0) -> Optional[UINode]:
             bounds_str = elem.attrib.get('bounds', '[0,0][0,0]')
@@ -363,9 +386,16 @@ class ADBBridge:
         except Exception:
             return []
 
+    async def _ui_nodes_or_empty(self, serial: str) -> List[UINode]:
+        """For internal find/retry helpers: an unreadable screen counts as 'nothing found yet'."""
+        try:
+            return await self.dump_ui_hierarchy(serial)
+        except UiDumpUnavailable:
+            return []
+
     async def find_element(self, serial: str, text_query: str) -> Optional[Tuple[int, int, str]]:
         """Searches UI hierarchy with normalized alphanumeric matching to handle spacing and casing differences."""
-        nodes = await self.dump_ui_hierarchy(serial)
+        nodes = await self._ui_nodes_or_empty(serial)
         norm_query = re.sub(r'[^a-zA-Z0-9]', '', text_query).lower()
         if not norm_query:
             return None
@@ -387,7 +417,7 @@ class ADBBridge:
 
     async def find_element_by_id(self, serial: str, resource_id: str) -> Optional[Tuple[int, int, UINode]]:
         """Searches UI hierarchy for matching resource-id and returns (center_x, center_y, node)."""
-        nodes = await self.dump_ui_hierarchy(serial)
+        nodes = await self._ui_nodes_or_empty(serial)
 
         def search_nodes(n_list: List[UINode]) -> Optional[Tuple[int, int, UINode]]:
             for n in n_list:
@@ -404,7 +434,7 @@ class ADBBridge:
 
     async def find_element_by_desc(self, serial: str, content_desc: str) -> Optional[Tuple[int, int, UINode]]:
         """Searches UI hierarchy for matching content description."""
-        nodes = await self.dump_ui_hierarchy(serial)
+        nodes = await self._ui_nodes_or_empty(serial)
         target = content_desc.lower()
 
         def search_nodes(n_list: List[UINode]) -> Optional[Tuple[int, int, UINode]]:

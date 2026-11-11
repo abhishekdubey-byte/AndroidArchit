@@ -71,7 +71,7 @@ async def run(ctl, serial: str, like: bool = True, progress: Optional[Callable[[
     back_steps = 0        # taps back after an accidental skip (bounded)
 
     async def dump():
-        return _flat(await ctl.dump_ui_hierarchy(serial))
+        return _flat(await ctl._ui_nodes_or_empty(serial))  # unreadable screen = a miss, retried below
 
     async def open_updates() -> List:
         nodes = await dump()

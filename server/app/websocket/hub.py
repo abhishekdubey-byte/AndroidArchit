@@ -27,7 +27,7 @@ PHONE_MESSAGES = {"DEVICE_HELLO", "RELAY_BOUND_ACK", "DEVICE_CAPABILITIES", "DEV
                   "APP_UPDATE_CHECK", "APP_UPDATE_PULL", "APP_LIFECYCLE_STATUS", "WAITLIST_GET", "WAITLIST_JOIN",
                   "GAME_JOIN", "GAME_STRIKE", "GAME_LEAVE",
                   "CALL_ACTIVE", "CALL_ENDED", "PHONE_AUDIO_CHUNK", "PHOTO_CAPTURED", "VIDEO_RECORDED",
-                  "CAMERA_FRAME", "CAMERA_STREAM_STATE", "CAMERA_AUDIO", "HUNT_STATE"}
+                  "CAMERA_FRAME", "CAMERA_STREAM_STATE", "CAMERA_AUDIO", "HUNT_STATE", "PHONE_AUDIO_STATE"}
 from ..services.pb_gateway import PHONE_TYPES as PB_PHONE_TYPES
 PHONE_MESSAGES = PHONE_MESSAGES | PB_PHONE_TYPES
 
@@ -69,6 +69,11 @@ class WebSocketHub:
         self._cam_config: Dict[str, bytes] = {}               # device_id -> latest H.264 SPS/PPS from the phone
         self._cam_rotation: Dict[str, int] = {}               # device_id -> camera sensor rotation (degrees cw)
         self._cam_state: Dict[str, dict] = {}                 # device_id -> last state of a live camera (for newcomers)
+        # Phone microphone as AAC (stream '<device_id>#mic'): heard with the live camera and by "Listen Live"
+        self._mic_config: Dict[str, bytes] = {}               # device_id -> AudioSpecificConfig
+        self._listeners: Dict[str, Set[Any]] = {}             # device_id -> dashboards with Listen Live on
+        self._legacy_pcm: Set[str] = set()                    # phones whose camera audio is old 16 kHz PCM
+        self._phone_media: Dict[str, Set[str]] = {}           # companion id -> live media it can send ("aac", ...)
         self.input_router = InputRouter(adb_bridge, device_manager, self.mirror_sessions)
         self.pb = None  # PowerBoosters gateway, attached in main.py
 
@@ -241,11 +246,14 @@ class WebSocketHub:
             did = dev.id if dev else device_id
             if msg_type == "START_CAMERA_STREAM":
                 self.fanout.subscribe(websocket, cam_stream)
+                self.fanout.subscribe(websocket, f"{did}#mic")   # the camera's sound (AAC from app 1.9.29+)
                 state = self._cam_state.setdefault(did, {})   # marks the camera as started (stopped if every viewer leaves)
                 if state:                                # camera already live: tell this newcomer how to draw it
                     await websocket.send_json({"type": "CAMERA_STREAM_STATE", "device_id": did, "payload": state})
             elif msg_type == "STOP_CAMERA_STREAM":
                 self.fanout.unsubscribe(websocket, cam_stream)
+                if websocket not in self._listeners.get(did, ()):
+                    self.fanout.unsubscribe(websocket, f"{did}#mic")
                 if self.fanout.subscribers(cam_stream):
                     return                               # another dashboard is still watching this camera
                 self._forget_camera(did)
@@ -263,6 +271,47 @@ class WebSocketHub:
                 await websocket.send_json({"type": "CAMERA_STREAM_STATE", "device_id": device_id,
                                            "payload": {"active": False, "error": "Phone app is not connected"}})
 
+        elif msg_type in ("START_PHONE_AUDIO", "STOP_PHONE_AUDIO"):
+            # "Listen Live": the phone microphone, live, in this dashboard
+            dev = self.device_manager.get_device(device_id)
+            did = dev.id if dev else device_id
+            if not did:
+                return
+            comp_sock = self._get_companion_socket(dev)
+            if msg_type == "START_PHONE_AUDIO":
+                error = None
+                if not comp_sock:
+                    error = "Phone app is not connected"
+                elif "aac" not in self._phone_media.get(dev.relay_id if dev else did, set()):
+                    error = "Update the phone app (1.9.29 or newer) to listen live"
+                elif not self.fanout.wants_h264(websocket):
+                    error = "Listening needs a secure dashboard (open it on localhost or https)"
+                if error:
+                    await websocket.send_json({"type": "PHONE_AUDIO_STATE", "device_id": did,
+                                               "payload": {"active": False, "error": error}})
+                    return
+                first = not self._listeners.get(did)
+                self._listeners.setdefault(did, set()).add(websocket)
+                self.fanout.subscribe(websocket, f"{did}#mic")
+                if first:
+                    try:
+                        await comp_sock.send_json({"type": "START_PHONE_AUDIO", "payload": {}})
+                    except Exception as e:
+                        print(f"[WebSocketHub] Error starting phone audio: {e}")
+            else:
+                await self._stop_listening(did, websocket)
+
+        elif msg_type == "PHONE_AUDIO_STATE":
+            # From the phone: Listen Live started / stopped / failed
+            _d = self._device_for_companion(device_id)
+            did = _d.id if _d else device_id
+            if payload.get("active") is False:
+                for ws in list(self._listeners.pop(did, ())):
+                    if self.fanout.subscribers(f"{did}#cam") == 0 or ws not in self.fanout.subscriber_sockets(f"{did}#cam"):
+                        self.fanout.unsubscribe(ws, f"{did}#mic")
+                self._maybe_forget_mic(did)
+            await self.broadcast_to_dashboards({"type": "PHONE_AUDIO_STATE", "device_id": did, "payload": payload})
+
         elif msg_type == "START_CAMERA_SAVE":
             from ..services.cam_record import CamRecorder, FFMPEG
             dev = self.device_manager.get_device(device_id)
@@ -275,7 +324,8 @@ class WebSocketHub:
                 # new upright file when the lens changes
                 self.cam_recorders[device_id] = AutoRecorder(
                     dev.name if dev else device_id, folder=folder, config=self._cam_config.get(device_id),
-                    rotation=self._cam_rotation.get(device_id, 0))
+                    rotation=self._cam_rotation.get(device_id, 0), audio_config=self._mic_config.get(device_id),
+                    legacy_audio=device_id in self._legacy_pcm)
                 sock = self._get_companion_socket(dev) if dev else None
                 if sock and self._cam_codec.get(device_id) == "h264":   # start at a key frame now, not up to 2 s later
                     try:
@@ -313,6 +363,8 @@ class WebSocketHub:
                     rec.submit(base64.b64decode(payload["data_base64"]))  # never blocks the event loop
                 except Exception:
                     pass
+            if msg_type == "CAMERA_AUDIO":
+                self._legacy_pcm.add(did)                # an older app: its recordings keep the PCM path
             if msg_type == "CAMERA_AUDIO" and rec and payload.get("pcm_base64"):
                 try:
                     rec.submit_audio(base64.b64decode(payload["pcm_base64"]), int(payload.get("sample_rate") or 16000))
@@ -462,6 +514,8 @@ class WebSocketHub:
                         await websocket.close(code=4403)
                         return
                 self.device_clients[comp_id] = websocket
+                media = payload.get("media")
+                self._phone_media[comp_id] = {str(m) for m in media} if isinstance(media, list) else set()
                 # A phone is not a dashboard: stop sending it screen frames/broadcasts.
                 self.dashboard_clients.discard(websocket)
                 if self.relays:
@@ -879,15 +933,23 @@ class WebSocketHub:
             return True                                      # a 720p key frame is ~200 KB: anything this big is bogus
         try:
             kind, pts = int(header.get("k", 3)), int(header.get("pts", 0))
-            if kind not in (1, 2, 3) or not 0 <= pts < 2 ** 62:
+            if kind not in (1, 2, 3, 4, 5) or not 0 <= pts < 2 ** 62:
                 return True
         except (TypeError, ValueError, OverflowError):
+            return True
+        rec = self.cam_recorders.get(did)
+        if kind in (4, 5):                                   # AAC microphone (same clock as the video)
+            if kind == 4:
+                self._mic_config[did] = payload
+                self._legacy_pcm.discard(did)
+            await self.fanout.publish_audio(f"{did}#mic", kind, pts, payload)
+            if rec is not None and hasattr(rec, "submit_audio_packet"):
+                rec.submit_audio_packet(kind, pts, payload)
             return True
         self._cam_codec[did] = "h264"
         if kind == 1:
             self._cam_config[did] = payload          # a recording started later needs it to begin
         await self.fanout.publish(f"{did}#cam", VideoPacket(pts, kind == 1, kind == 2, payload))
-        rec = self.cam_recorders.get(did)
         if rec is not None and hasattr(rec, "submit_video"):
             rec.submit_video(kind, pts, payload)
         return True
@@ -961,6 +1023,8 @@ class WebSocketHub:
         self.fanout.remove(websocket)
         for device_id in list(self.active_streaming_devices) + list(self.mirror_sessions):
             await self._stop_unwatched(device_id)
+        for did in list(self._listeners):                    # nor its microphone
+            await self._stop_listening(did, websocket)
         for did in list(self._cam_state):                   # a closed tab must not leave the phone's camera running
             if self.fanout.subscribers(f"{did}#cam") == 0:
                 dev = self.device_manager.get_device(did)
@@ -977,6 +1041,32 @@ class WebSocketHub:
         self._cam_state.pop(did, None)
         self._cam_config.pop(did, None)
         self.fanout.forget_device(f"{did}#cam")
+        self._maybe_forget_mic(did)
+
+    def _maybe_forget_mic(self, did: str) -> None:
+        """The phone's mic runs for the camera and for Listen Live: forget its stream once neither uses it."""
+        if did not in self._cam_state and not self._listeners.get(did):
+            self._mic_config.pop(did, None)
+            self.fanout.forget_device(f"{did}#mic")
+
+    async def _stop_listening(self, did: str, websocket) -> None:
+        listeners = self._listeners.get(did)
+        if listeners is None or websocket not in listeners:
+            return
+        listeners.discard(websocket)
+        if websocket not in self.fanout.subscriber_sockets(f"{did}#cam"):
+            self.fanout.unsubscribe(websocket, f"{did}#mic")
+        if listeners:
+            return                                        # another dashboard is still listening
+        del self._listeners[did]
+        dev = self.device_manager.get_device(did)
+        sock = self._get_companion_socket(dev) if dev else None
+        if sock:
+            try:
+                await sock.send_json({"type": "STOP_PHONE_AUDIO", "payload": {}})
+            except Exception:
+                pass
+        self._maybe_forget_mic(did)
 
     async def _stop_unwatched(self, device_id: str) -> None:
         if self.fanout.subscribers(device_id) == 0:

@@ -19,12 +19,23 @@ class HeadlessCameraActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Transparent and non-touchable (touches reach the app underneath). It must stay focusable:
-        // a focused-but-unfocusable window makes Android kill the app (ANR) on the next key press.
-        window.addFlags(
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-        )
+        // Phone locked (e.g. it was asleep)? Then this window must NOT look like an unlocked phone: shown over the
+        // lock screen a transparent window reveals the home screen underneath. Cover it with a black, dim,
+        // touch-blocking curtain instead, and never ask to dismiss the lock screen (that popped the unlock prompt).
+        val locked = (getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
+        if (locked) {
+            window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK))
+            setContentView(android.view.View(this).apply { setBackgroundColor(android.graphics.Color.BLACK) })
+            window.attributes = window.attributes.apply { screenBrightness = 0.01f }
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            // Unlocked (in use): transparent and non-touchable so the person can keep using the phone. It must stay
+            // focusable: a focused-but-unfocusable window makes Android kill the app (ANR) on the next key press.
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
 
         // Configure lock-screen display & turn-screen-on across Android 8.1 through 15
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -34,8 +45,7 @@ class HeadlessCameraActivity : Activity() {
         @Suppress("DEPRECATION")
         window.addFlags(
             WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         )
         overridePendingTransition(0, 0)
 
@@ -49,7 +59,7 @@ class HeadlessCameraActivity : Activity() {
             val lockTimeoutMs = if (duration > 0) (duration + 15) * 1000L else 6 * 3600_000L  // 0 = until stopped
             // Turn the screen on, not just the CPU: a remote capture must work when the phone is asleep.
             @Suppress("DEPRECATION")
-            val wakeFlags = PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE
+            val wakeFlags = PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP
             wakeLock = pm.newWakeLock(wakeFlags, "Operator:HeadlessCameraWakeLock").apply {
                 setReferenceCounted(false)
                 acquire(lockTimeoutMs)

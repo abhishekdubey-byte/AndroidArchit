@@ -1473,3 +1473,25 @@ button:focus-visible, select:focus-visible, input:focus-visible, .video-chip:foc
 .app-life-pick { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); cursor: pointer; }
 .app-life-bulk { align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--text-secondary); margin: 0 0 4px; }
 .fleet-note { white-space: pre-line; }
+
+/* Crystal Mines HUNT panel (dashboard) */
+.hunt-panel { margin-top: 10px; padding: 12px; border-radius: 14px; background: linear-gradient(180deg, rgba(76, 29, 149, 0.35), rgba(15, 19, 40, 0.8));
+  border: 1px solid rgba(168, 85, 247, 0.5); display: flex; flex-direction: column; gap: 8px; }
+.hunt-panel[hidden] { display: none; }
+.hunt-head { display: flex; justify-content: space-between; align-items: center; }
+.hunt-title { font-weight: 800; letter-spacing: .08em; color: #fde68a; }
+.hunt-dna { font-weight: 800; color: #67e8f9; }
+.hunt-target { font-size: 12.5px; color: var(--text-secondary); }
+.hunt-target.seen { color: #67e8f9; } .hunt-target.locked { color: #facc15; font-weight: 700; }
+.hunt-creatures { display: flex; flex-wrap: wrap; gap: 6px; }
+.hunt-chip { font-size: 11px; padding: 4px 8px; border-radius: 999px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); cursor: pointer; }
+.hunt-chip:hover { border-color: #a78bfa; }
+.hunt-chip.r-common { color: #86efac; } .hunt-chip.r-uncommon { color: #fcd34d; } .hunt-chip.r-rare { color: #fda4af; }
+.hunt-chip.r-epic { color: #d8b4fe; } .hunt-chip.r-legendary { color: #fde047; }
+.hunt-cmd { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.hunt-pad { display: grid; grid-template-columns: repeat(3, 34px); gap: 4px; }
+.hunt-pad button { height: 32px; border-radius: 8px; border: 1px solid var(--card-line); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; font-size: 15px; }
+.hunt-pad button:hover { background: rgba(168,85,247,0.25); }
+.hunt-say { flex: 1; display: flex; gap: 6px; min-width: 200px; }
+.hunt-say input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--card-line); background: rgba(0,0,0,0.3); color: #fff; }
+.hunt-target { white-space: pre-line; }

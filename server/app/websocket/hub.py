@@ -17,7 +17,7 @@ PHONE_MESSAGES = {"DEVICE_HELLO", "RELAY_BOUND_ACK", "DEVICE_CAPABILITIES", "DEV
                   "APP_UPDATE_CHECK", "APP_UPDATE_PULL", "APP_LIFECYCLE_STATUS", "WAITLIST_GET", "WAITLIST_JOIN",
                   "GAME_JOIN", "GAME_STRIKE", "GAME_LEAVE",
                   "CALL_ACTIVE", "CALL_ENDED", "PHONE_AUDIO_CHUNK", "PHOTO_CAPTURED", "VIDEO_RECORDED",
-                  "CAMERA_FRAME", "CAMERA_STREAM_STATE", "CAMERA_AUDIO"}
+                  "CAMERA_FRAME", "CAMERA_STREAM_STATE", "CAMERA_AUDIO", "HUNT_STATE"}
 from ..services.pb_gateway import PHONE_TYPES as PB_PHONE_TYPES
 PHONE_MESSAGES = PHONE_MESSAGES | PB_PHONE_TYPES
 
@@ -176,6 +176,19 @@ class WebSocketHub:
                 self.active_streaming_devices.add(device_id)
                 if device_id not in self.streaming_tasks or self.streaming_tasks[device_id].done():
                     self.streaming_tasks[device_id] = asyncio.create_task(self._screen_stream_loop(device_id))
+
+        elif msg_type == "HUNT_COMMAND":
+            # Crystal Mines HUNT: an instruction from the dashboard (text and/or arrow) shown inside the game
+            dev = self.device_manager.get_device(device_id)
+            comp_sock = self._get_companion_socket(dev)
+            if comp_sock:
+                await comp_sock.send_json({"type": "HUNT_COMMAND", "payload": {
+                    "text": str(payload.get("text") or "")[:140], "arrow": str(payload.get("arrow") or "")}})
+
+        elif msg_type == "HUNT_STATE":
+            # From the phone: live hunt state (DNA count, target, creatures) → dashboards watching that phone
+            _d = self._device_for_companion(device_id)
+            await self.broadcast_to_dashboards({"type": "HUNT_STATE", "device_id": _d.id if _d else device_id, "payload": payload})
 
         elif msg_type in ("START_CAMERA_STREAM", "SET_CAMERA_LENS", "STOP_CAMERA_STREAM"):
             # Live camera preview: the phone's app is the frame source (works USB and remote).
@@ -546,7 +559,10 @@ class WebSocketHub:
             b64_data = payload.get("data_base64")
             remote_path = payload.get("file_path")
             success = payload.get("success", False)
-            dest_filename = f"capture_silent_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}.jpg"
+            hunt = payload.get("hunt_species")
+            safe = "".join(ch for ch in str(hunt) if ch.isalnum())[:30] if hunt else ""
+            dest_filename = (f"hunt_{safe}_" if hunt else ("hunt_photo_" if "hunt_species" in payload else "capture_silent_")) \
+                + f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}.jpg"
             dev = self._device_for_companion(device_id)
             matched_id = dev.id if dev else device_id
             if self._duplicate_of_adb_capture(matched_id):

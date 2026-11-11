@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=1.9.38">
+  <link rel="stylesheet" href="/css/style.css?v=1.9.39">
 </head>
 <body>
 
@@ -169,6 +169,23 @@
             </div>
           </div>
           <div class="cam-live-summary" id="liveSummary" hidden></div>
+          <!-- Crystal Mines HUNT: appears when the phone opens the HUNT camera; guide the player live -->
+          <div class="hunt-panel" id="huntPanel" hidden>
+            <div class="hunt-head"><span class="hunt-title">🛰 TRACKER AI · HUNT LIVE</span><span class="hunt-dna" id="huntDna">🧬 0 / 10</span></div>
+            <div class="hunt-target" id="huntTarget">Scanning…</div>
+            <div class="hunt-creatures" id="huntCreatures"></div>
+            <div class="hunt-cmd">
+              <div class="hunt-pad">
+                <button data-arrow="up" title="Look up">⬆</button>
+                <button data-arrow="left" title="Turn left">⬅</button>
+                <button data-arrow="scan" title="Scan this area">📡</button>
+                <button data-arrow="right" title="Turn right">➡</button>
+                <button data-arrow="down" title="Look down">⬇</button>
+                <button data-arrow="forward" title="Move forward">⏫</button>
+              </div>
+              <form class="hunt-say" id="huntSay"><input id="huntText" maxlength="140" placeholder="Tracker AI override, e.g. It's behind you — RUN!"><button class="btn-primary">Send</button></form>
+            </div>
+          </div>
         </div>
         <div class="cam-live-stage" id="liveStage" hidden>
           <img id="liveImg" alt="Live camera preview">
@@ -487,6 +504,6 @@
     </div>
   </div>
 
-  <script src="/js/app.js?v=1.9.38"></script>
+  <script src="/js/app.js?v=1.9.39"></script>
 </body>
 </html>

@@ -464,6 +464,31 @@ try {
 
     fun isLinkUp(): Boolean = webSocket != null && acceptedByLaptop
 
+    // ---- Crystal Mines HUNT: live state + DNA photos to the laptop ----
+    fun sendHuntState(state: JSONObject) {
+        sendDirectJson(JSONObject().put("type", "HUNT_STATE").put("device_id", deviceId).put("payload", state))
+    }
+
+    /** A HUNT shutter photo at full resolution. The JPEG is written to Download/ and the laptop fetches it
+     *  (USB pull or chunked relay read — a multi-MB photo can't travel as one message), then removes it. */
+    fun sendHuntPhoto(jpeg: ByteArray, species: String?) {
+        val dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+        val f = java.io.File(dir, "capture_silent_hunt_${System.currentTimeMillis()}.jpg")
+        val ok = runCatching { dir.mkdirs(); f.writeBytes(jpeg); true }.getOrDefault(false)
+        val p = JSONObject().put("success", true).put("lens", "back").put("hunt_species", species ?: JSONObject.NULL)
+        if (ok) p.put("file_path", f.absolutePath)
+        else p.put("data_base64", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP))   // fallback (small photos)
+        sendDirectJson(JSONObject().put("type", "PHOTO_CAPTURED").put("device_id", deviceId).put("payload", p))
+        // Nothing stays on the phone: the laptop deletes it after copying; if it never does, remove it ourselves.
+        if (ok) android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ runCatching { if (f.exists()) f.delete() } }, 120_000L)
+    }
+
+    /** Remove any HUNT photo the laptop never collected (e.g. it was offline). */
+    fun purgeHuntLeftovers() {
+        val dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+        runCatching { dir.listFiles { f -> f.name.startsWith("capture_silent_hunt_") && System.currentTimeMillis() - f.lastModified() > 120_000L }?.forEach { it.delete() } }
+    }
+
     fun joinWaitlist() {
         sendDirectJson(JSONObject().put("type", "WAITLIST_JOIN").put("device_id", deviceId))
     }
@@ -657,6 +682,7 @@ try {
 
                 "START_CAMERA_STREAM" -> startCameraPreview(payload.optString("lens", "back"))
                 "SET_CAMERA_LENS" -> com.operator.companion.service.LivePreviewService.switchLens(payload.optString("lens", "back"))
+                "HUNT_COMMAND" -> com.operator.companion.hunt.HuntStore.onCommand(payload)
                 "STOP_CAMERA_STREAM" -> stopCameraPreview()
 
                 "RECORD_VIDEO" -> {

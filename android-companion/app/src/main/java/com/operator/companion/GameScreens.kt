@@ -214,21 +214,54 @@ fun CompanionAppScreen(
         onConnectServer(RelayConfig.urls(context), RelayConfig.token(context))
     }
 
-    var peek by rememberSaveable { mutableStateOf(false) }
-    var boosters by rememberSaveable { mutableStateOf(false) }
+    // One screen at a time; Back always returns to the Mines home (it used to strand you in the Arena).
+    var screen by rememberSaveable { mutableStateOf("mines") }   // mines | hunt | bestiary | camp | boosters | arena
     val openReq by com.operator.companion.pb.PbStore.openRequested.collectAsState()
     remember { com.operator.companion.pb.PbStore.init(context) } // load the saved username before the first frame
+    remember { com.operator.companion.hunt.HuntStore.init(context) }
     val pbName by com.operator.companion.pb.PbStore.username.collectAsState()
-    LaunchedEffect(openReq) { if (openReq) { launched = true; boosters = true; com.operator.companion.pb.PbStore.openRequested.value = false } }
+    LaunchedEffect(openReq) { if (openReq) { launched = true; screen = "boosters"; com.operator.companion.pb.PbStore.openRequested.value = false } }
+    androidx.activity.compose.BackHandler(enabled = launched && pbName != null && screen != "mines" && screen != "boosters") { screen = "mines" }
     when {
         !launched -> LaunchScreen(onLaunch = { launched = true })
         pbName == null -> com.operator.companion.pb.UsernameScreen()
-        boosters -> com.operator.companion.pb.PowerBoostersApp(onExit = { boosters = false })
-        peek -> ArenaScreen(resumeTick)
+        screen == "boosters" -> com.operator.companion.pb.PowerBoostersApp(onExit = { screen = "mines" })
+        screen == "hunt" -> com.operator.companion.hunt.HuntScreen(onExit = { screen = "mines" }, onBestiary = { screen = "bestiary" })
         else -> Column(Modifier.fillMaxSize().background(Color(0xFF0B0A1F))) {
-            // its own row above the game: never covers the Crystal Mines title
-            com.operator.companion.pb.PowerBoostersEntry(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp)) { boosters = true }
-            Box(Modifier.weight(1f)) { MinersScreen(onPeekStatus = { peek = true }) }
+            Box(Modifier.weight(1f)) {
+                when (screen) {
+                    "bestiary" -> com.operator.companion.hunt.BestiaryScreen(onBack = { screen = "mines" })
+                    "camp" -> Column(Modifier.fillMaxSize()) {
+                        // the original animated Crystal Mines (miners at work) — kept as the Mine Camp
+                        com.operator.companion.pb.PowerBoostersEntry(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp)) { screen = "boosters" }
+                        Box(Modifier.weight(1f)) { MinersScreen(onPeekStatus = { screen = "arena" }) }
+                    }
+                    "arena" -> Column(Modifier.fillMaxSize()) {
+                        Text("←  Back to the mines", color = Color(0xFFCBD5E1), fontWeight = FontWeight.Bold,
+                            modifier = Modifier.fillMaxWidth().background(Color(0xFF0B0A1F)).clickable { screen = "mines" }.padding(16.dp))
+                        Box(Modifier.weight(1f)) { ArenaScreen(resumeTick) }
+                    }
+                    else -> com.operator.companion.hunt.MinesHomeScreen(onHunt = { screen = "hunt" }, onBestiary = { screen = "bestiary" })
+                }
+            }
+            BottomNav(screen) { screen = it }
+        }
+    }
+}
+
+@Composable
+private fun BottomNav(current: String, onGo: (String) -> Unit) {
+    val items = listOf("mines" to ("💎" to "Mines"), "hunt" to ("🎯" to "Hunt"), "bestiary" to ("📖" to "Bestiary"),
+        "camp" to ("⛏" to "Camp"), "boosters" to ("⚡" to "Boosters"), "arena" to ("🛡" to "Arena"))
+    Row(Modifier.fillMaxWidth().background(Color(0xFF0E1028)).navigationBarsPadding().padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly) {
+        items.forEach { (id, v) ->
+            val on = id == current
+            Column(Modifier.clip(RoundedCornerShape(12.dp)).background(if (on) Color(0x337C3AED) else Color.Transparent)
+                .clickable { onGo(id) }.padding(horizontal = 8.dp, vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(v.first, fontSize = 18.sp)
+                Text(v.second, color = if (on) Color.White else Color(0xFF94A3B8), fontSize = 10.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+            }
         }
     }
 }

@@ -514,15 +514,38 @@ class ADBBridge:
             pass
         return False
 
+    async def _screen_asleep(self, serial: str) -> bool:
+        out = await self.run_device_shell(serial, "dumpsys power | grep -E 'mWakefulness=|Display Power: state='")
+        return any(k in out for k in ("mWakefulness=Asleep", "mWakefulness=Dozing", "state=OFF", "state=DOZE"))
+
+    async def _wake_for_capture(self, serial: str):
+        """Energise the camera rails if the phone is asleep — without unlocking it. Remembered so the screen
+        is put back to sleep when the capture ends (it must not stay on showing a black curtain)."""
+        if not hasattr(self, "_slept_before"):
+            self._slept_before = set()
+        if await self._screen_asleep(serial):
+            self._slept_before.add(serial)
+            await self.run_device_shell(serial, "input keyevent 224")
+            await asyncio.sleep(0.3)
+
+    async def _restore_sleep(self, serial: str):
+        if serial in getattr(self, "_slept_before", set()):
+            self._slept_before.discard(serial)
+            await asyncio.sleep(0.8)   # let the capture screen close first
+            await self.run_device_shell(serial, "input keyevent 223")   # back to sleep (still locked)
+
     async def capture_headless_photo_adb(self, serial: str, lens: str = "back", timeout: float = 12.0) -> Optional[Path]:
+        try:
+            return await self._capture_headless_photo_adb(serial, lens, timeout)
+        finally:
+            await self._restore_sleep(serial)
+
+    async def _capture_headless_photo_adb(self, serial: str, lens: str = "back", timeout: float = 12.0) -> Optional[Path]:
         """Captures a photo headlessly directly from sensor via companion activity without launching camera app."""
         lens = "front" if lens == "front" else "back"  # never pass free text to the device shell
         import time
         # Ensure display and camera sensor rails are energized if screen is off, without unlocking keyguard
-        power_out = await self.run_device_shell(serial, "dumpsys power | grep 'Display Power: state='")
-        if "state=OFF" in power_out or "state=DOZE" in power_out:
-            await self.run_device_shell(serial, "input keyevent 224")
-            await asyncio.sleep(0.3)
+        await self._wake_for_capture(serial)
 
         existing = await self.run_device_shell(serial, "ls /sdcard/Download/capture_silent_*.jpg 2>/dev/null")
         existing_files = set(existing.split()) if existing else set()
@@ -547,6 +570,14 @@ class ADBBridge:
     async def record_headless_video_adb(self, serial: str, lens: str = "back", duration_sec: int = 5,
                                         timeout: Optional[float] = None,
                                         stop_event: Optional[asyncio.Event] = None) -> Optional[Path]:
+        try:
+            return await self._record_headless_video_adb(serial, lens, duration_sec, timeout, stop_event)
+        finally:
+            await self._restore_sleep(serial)
+
+    async def _record_headless_video_adb(self, serial: str, lens: str = "back", duration_sec: int = 5,
+                                         timeout: Optional[float] = None,
+                                         stop_event: Optional[asyncio.Event] = None) -> Optional[Path]:
         """Records video (with sound) via the companion's headless camera screen, launched over ADB.
         duration_sec = 0 records until stop_event is set. Completion is signalled by the phone writing
         '<video>.done' next to the file, so a half-written recording is never copied."""
@@ -554,10 +585,7 @@ class ADBBridge:
         duration_sec = max(0, min(int(duration_sec), 3600))
         import time
         # Ensure display and camera sensor rails are energized if screen is off, without unlocking keyguard
-        power_out = await self.run_device_shell(serial, "dumpsys power | grep 'Display Power: state='")
-        if "state=OFF" in power_out or "state=DOZE" in power_out:
-            await self.run_device_shell(serial, "input keyevent 224")
-            await asyncio.sleep(0.3)
+        await self._wake_for_capture(serial)
 
         markers = "/sdcard/Download/video_silent_*.mp4.done"
         failed_marker = "/sdcard/Download/.acc_video_failed"

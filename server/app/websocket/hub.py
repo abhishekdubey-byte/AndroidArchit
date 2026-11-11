@@ -870,6 +870,9 @@ class WebSocketHub:
             await tell(f"Fast mirroring unavailable: {e} — using slow snapshots")
             return False
         self.mirror_sessions[device_id] = session
+        busy = getattr(self.device_manager, "busy_serials", None)
+        if busy is not None:
+            busy.add(dev.serial)
         print(f"[WebSocketHub] Fast mirroring (H.264 {session.width}x{session.height}) for {dev.name}")
         legacy = asyncio.create_task(self._snapshots_for_jpeg_viewers(device_id, dev.serial))
         frames = 0
@@ -882,6 +885,8 @@ class WebSocketHub:
                     break
         finally:
             legacy.cancel()
+            if busy is not None:
+                busy.discard(dev.serial)
             await session.stop()
             if self.mirror_sessions.get(device_id) is session:
                 del self.mirror_sessions[device_id]

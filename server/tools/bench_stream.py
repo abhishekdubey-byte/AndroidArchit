@@ -59,27 +59,43 @@ async def bench(args) -> None:
     base = f"http://{args.host}"
     serial = json.load(urllib.request.urlopen(f"{base}/api/devices/{args.device_id}", timeout=10))["serial"]
     stamps, sizes, temps = [], [], [(0, phone_temps(serial))]
+    seen_pts = set()      # a resync replays cached packets: count each frame once
     async with websockets.connect(f"ws://{args.host}/ws/dashboard", max_size=64 * 1024 * 1024) as ws:
         await ws.send(json.dumps({"type": "CLIENT_CAPS", "payload": {"h264": True}}))
         start = {"mirror": {"type": "START_SCREEN_STREAM", "device_id": args.device_id},
                  "camera": {"type": "START_CAMERA_STREAM", "device_id": args.device_id, "payload": {"lens": "back"}}}
         await ws.send(json.dumps(start[args.mode]))
         t0 = time.time()
-        next_temp, next_swipe, flip = 30.0, 1.0, False
-        while time.time() - t0 < args.seconds:
-            now = time.time() - t0
-            if args.scroll and now >= next_swipe:
+
+        async def sample_temps():        # its own task: an adb call must never pause packet receiving
+            while True:
+                await asyncio.sleep(30)
+                temps.append((round(time.time() - t0), await asyncio.to_thread(phone_temps, serial)))
+
+        async def keep_scrolling():
+            flip = False
+            while True:
+                await asyncio.sleep(1.0)
                 y1, y2 = (700, 1700) if flip else (1700, 700)
                 flip = not flip
                 await ws.send(json.dumps({"type": "INPUT_SWIPE", "device_id": args.device_id,
                                           "payload": {"x1": 540, "y1": y1, "x2": 540, "y2": y2, "duration_ms": 250}}))
-                next_swipe += 1.0
+
+        helpers = [asyncio.create_task(sample_temps())]
+        if args.scroll:
+            helpers.append(asyncio.create_task(keep_scrolling()))
+        while time.time() - t0 < args.seconds:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
             except asyncio.TimeoutError:
                 raw = None
             if isinstance(raw, (bytes, bytearray)):
                 if raw[0] in (2, 3):                       # key / delta video packet
+                    n = raw[1]
+                    pts = (raw[2:2 + n], int.from_bytes(raw[2 + n:10 + n], "big"))
+                    if pts in seen_pts:
+                        continue
+                    seen_pts.add(pts)
                     stamps.append(time.time() - t0)
                     sizes.append(len(raw))
             elif raw:
@@ -87,9 +103,8 @@ async def bench(args) -> None:
                 if msg.get("type") in ("SCREEN_FRAME", "CAMERA_FRAME") and msg.get("device_id") == args.device_id:
                     stamps.append(time.time() - t0)
                     sizes.append(len(msg.get("payload", {}).get("data_base64", "")))
-            if now >= next_temp:
-                temps.append((round(now), await asyncio.to_thread(phone_temps, serial)))
-                next_temp += 30
+        for h in helpers:
+            h.cancel()
         stop = {"mirror": "STOP_SCREEN_STREAM", "camera": "STOP_CAMERA_STREAM"}[args.mode]
         await ws.send(json.dumps({"type": stop, "device_id": args.device_id}))
     temps.append((round(time.time() - t0), phone_temps(serial)))
@@ -104,6 +119,8 @@ async def bench(args) -> None:
         if gaps:
             print(f"frame gap ms: median {statistics.median(gaps) * 1000:.0f}  p95 {gaps[int(len(gaps) * .95) - 1] * 1000:.0f}"
                   f"  max {gaps[-1] * 1000:.0f}")
+            worst = sorted(((b - a, a) for a, b in zip(stamps, stamps[1:])), reverse=True)[:5]
+            print("largest gaps (ms @ s):", "  ".join(f"{g * 1000:.0f}@{at:.1f}" for g, at in worst))
         print(f"throughput {sum(sizes) / dur / 1024:.0f} KB/s")
     for t, s in temps:
         print(f"t={t:>4}s  {s}")

@@ -26,6 +26,10 @@ class DeviceManager:
         self._last_wake: Dict[str, float] = {}
         self._wake_backoff: Dict[str, float] = {}
         self.relays = None  # RelayRegistry, attached in main.py
+        # Serials with a live fast mirror: their full details (dumpsys/wm, each a phone-side process or a
+        # WindowManager lock) are re-read every BUSY_POLL_S instead of every 4 s, so polling doesn't stutter it.
+        self.busy_serials: set = set()
+        self._details_at: Dict[str, float] = {}
 
     def add_diagnostic_report(self, report: Dict[str, Any]):
         self.diagnostics_log.insert(0, report)
@@ -108,8 +112,13 @@ class DeviceManager:
 
         for d_meta in attached:
             serial = d_meta["serial"]
+            known = self.serial_to_id.get(serial) in self.devices
+            if (known and serial in self.busy_serials
+                    and time.time() - self._details_at.get(serial, 0) < self.BUSY_POLL_S):
+                continue   # still attached (adb devices above); details refreshed less often while mirroring
             try:
                 dev = await self.adb.get_device_details(serial)
+                self._details_at[serial] = time.time()
                 old_dev = self.devices.get(dev.id)
                 dev.relay_id = await self._relay_id_for(serial)
                 dev.relay_online = bool(dev.relay_id) and dev.relay_id in self.relay_online_ids
@@ -284,6 +293,8 @@ class DeviceManager:
                 return await asyncio.to_thread(app_update.signer_digest, local) == ours
         except Exception:
             return False
+
+    BUSY_POLL_S = 15.0
 
     def prune_relay_id_cache(self, current_serials) -> None:
         for serial in list(self._relay_id_cache):

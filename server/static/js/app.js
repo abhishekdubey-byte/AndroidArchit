@@ -452,6 +452,15 @@ class ControlCentreApp {
     this.renderDeviceList();
     const ad = document.getElementById("appsPopDevice"); if (ad) ad.innerText = "· " + dev.name;
     this.loadCaptures();
+    this.renderActiveDeviceHeader(dev);
+
+    this.loadDeviceApps(dev.id);
+    this.loadDeviceFiles(dev.id);
+  }
+
+  // Title "(USB / Wi-Fi / Remote / OFFLINE)" + screen panel state for the selected phone.
+  // Called on selection and whenever that phone goes offline or comes back.
+  renderActiveDeviceHeader(dev) {
     const link = dev.status === "offline" ? "OFFLINE" : dev.transport === "companion_ws" ? "Remote" : dev.serial.includes(":") ? "Wi-Fi" : "USB";
     document.getElementById("activeDeviceTitle").innerText = `${esc(dev.brand.toUpperCase())} ${esc(dev.model)} (${link})`;
 
@@ -463,9 +472,6 @@ class ControlCentreApp {
     } else {
       this.renderScreenNotice("Screen mirroring is off. Turn it on above when you need it.");
     }
-
-    this.loadDeviceApps(dev.id);
-    this.loadDeviceFiles(dev.id);
   }
 
   updateDevice(deviceData) {
@@ -476,8 +482,11 @@ class ControlCentreApp {
       this.devices.push(deviceData);
     }
     if (this.activeDevice && this.activeDevice.id === deviceData.id) {
-      const cameBack = this.activeDevice.status === "offline" && deviceData.status !== "offline";
+      const prev = this.activeDevice;
+      const cameBack = prev.status === "offline" && deviceData.status !== "offline";
+      const linkChanged = prev.status !== deviceData.status || prev.transport !== deviceData.transport;
       this.activeDevice = deviceData;
+      if (linkChanged) this.renderActiveDeviceHeader(deviceData);   // no stale "(OFFLINE)" after a replug
       if (cameBack) { this.loadDeviceFiles(deviceData.id); this.loadDeviceApps(deviceData.id); }   // list storage as soon as it reconnects
     }
     this.renderDeviceList();
@@ -488,6 +497,10 @@ class ControlCentreApp {
     if (dev) {
       dev.status = "offline";
       if (this.activeDevice && this.activeDevice.id === dev.id && this.live && this.live.on) this.stopLivePreview("the phone went offline");
+      if (this.activeDevice && this.activeDevice.id === dev.id) {
+        this.activeDevice.status = "offline";
+        this.renderActiveDeviceHeader(this.activeDevice);
+      }
       this.renderDeviceList();
     }
   }
@@ -1004,24 +1017,14 @@ class ControlCentreApp {
     const audioStatusText = document.getElementById("audioStatusText");
 
     if (audioBtn) {
-      audioBtn.onclick = () => {
-        this.isAudioListening = !this.isAudioListening;
-        if (this.isAudioListening) {
-          audioBtn.innerText = "🛑 Stop Listening";
-          audioBtn.style.background = "#f43f5e";
-          audioBtn.style.color = "#fff";
-          audioWaves.classList.add("active");
-          audioStatusText.innerText = "Listening live to phone audio output...";
-          this.startAudioStreaming();
-        } else {
-          audioBtn.innerText = "🔊 Listen Live";
-          audioBtn.style.background = "rgba(6, 182, 212, 0.2)";
-          audioBtn.style.color = "#67e8f9";
-          audioWaves.classList.remove("active");
-          audioStatusText.innerText = "Listen to phone calls from laptop";
-          this.stopAudioStreaming();
-        }
-      };
+      // Live phone audio is not implemented yet (upgrade roadmap, Phase 4): never pretend to be listening.
+      audioBtn.disabled = true;
+      audioBtn.title = "Coming soon: live phone audio";
+      audioBtn.innerText = "🔊 Listen Live (soon)";
+      audioBtn.style.opacity = "0.5";
+      audioBtn.style.cursor = "not-allowed";
+      if (audioWaves) audioWaves.classList.remove("active");
+      if (audioStatusText) audioStatusText.innerText = "Live phone audio is coming soon";
     }
 
     // Screen mirroring switch (off by default to save the phone's battery)
@@ -1704,6 +1707,13 @@ class ControlCentreApp {
       const container = document.getElementById("appsContainer");
       if (!container) return;
       container.innerHTML = "";
+      if (!res.ok || !Array.isArray(apps)) {   // offline phone → error object, not a list
+        const note = document.createElement("div");
+        note.className = "apps-unavailable";
+        note.textContent = "Apps unavailable — phone offline";
+        container.appendChild(note);
+        return;
+      }
 
       const have = new Set((apps || []).map((a) => a.package_name));
       // Camera differs per brand: open whichever camera app this phone has

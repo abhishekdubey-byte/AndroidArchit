@@ -76,21 +76,17 @@ fun MinesHomeScreen(onHunt: () -> Unit, onBestiary: () -> Unit) {
             Text("${SPECIES.size} mutated creatures escaped into the real world. Open the HUNT camera, track them on foot — they run! — exploit each weakness and capture their DNA. Rarer ones appear as your collection grows.",
                 color = Color(0xFFE2E8F0), fontSize = 13.sp)
         }
-        // organisms grid
+        // organisms: big cards, grouped by mutation series (2 per row)
         Panel("🐾 ESCAPED ORGANISMS (${SPECIES.size})", action = "Bestiary ›", onAction = onBestiary) {
-            SPECIES.chunked(5).forEach { row ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    row.forEach { sp ->
-                        val got = sp.id in collected
-                        Column(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(Color(0xFF0B0C22))
-                            .border(1.dp, if (got) sp.rarity.color else Line, RoundedCornerShape(10.dp)).clickable(onClick = onBestiary).padding(vertical = 4.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally) {
-                            Canvas(Modifier.size(52.dp).alpha(if (got) 1f else 0.55f)) { drawSpecies(sp, center, size.minDimension * 0.27f, t + sp.dna.hashCode() % 7) }
-                            Text(if (got) sp.name.take(11) else "???", color = if (got) Color.White else Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        }
+            SPECIES.groupBy { it.series }.forEach { (series, list) ->
+                SeriesHeader(series, list.count { it.id in collected }, list.size)
+                list.chunked(2).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { sp -> SpeciesCard(sp, sp.id in collected, t, Modifier.weight(1f), onBestiary) }
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
                     }
+                    Spacer(Modifier.height(8.dp))
                 }
-                Spacer(Modifier.height(6.dp))
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -135,23 +131,27 @@ fun BestiaryScreen(onBack: () -> Unit) {
             Text("🧬 ${collected.size}/${SPECIES.size}", color = Cyan, fontWeight = FontWeight.Black)
         }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SPECIES.forEachIndexed { i, sp ->
+            SPECIES.groupBy { it.series }.forEach { (series, list) ->
+              SeriesHeader(series, list.count { it.id in collected }, list.size)
+              list.forEach { sp ->
+                val i = SPECIES.indexOf(sp)
                 val got = sp.id in collected
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Card)
-                    .border(1.dp, if (got) sp.rarity.color.copy(alpha = 0.8f) else Line, RoundedCornerShape(14.dp)).padding(10.dp),
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Brush.horizontalGradient(listOf(Color(0xFF181540), Card)))
+                    .border(1.dp, if (got) sp.rarity.color.copy(alpha = 0.85f) else Line, RoundedCornerShape(16.dp)).padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Canvas(Modifier.size(84.dp).alpha(if (got) 1f else 0.35f)) { drawSpecies(sp, center, size.minDimension * 0.28f, t + i) }
+                    Canvas(Modifier.size(128.dp).alpha(if (got) 1f else 0.8f)) { drawSpecies(sp, center, size.minDimension * 0.27f, t + i) }
                     Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${i + 1}. ${if (got) sp.name else "UNKNOWN"}", color = Color.White, fontWeight = FontWeight.Black, fontSize = 15.sp, modifier = Modifier.weight(1f))
-                            Text(sp.rarity.label, color = sp.rarity.color, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                        }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(sp.rarity.label, color = sp.rarity.color, fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                        Text("${i + 1}. ${if (got) sp.name else "UNKNOWN"}", color = Color.White, fontWeight = FontWeight.Black, fontSize = 17.sp)
                         Text("DNA: ${sp.dna}", color = Muted, fontSize = 11.sp)
                         Text("⚡ ${sp.power} — ${sp.powerInfo}", color = Color(0xFFE2E8F0), fontSize = 12.sp)
                         Text("🎯 Weakness: ${if (got) sp.weakness else "capture its DNA to learn it"}", color = if (got) Gold else Muted, fontSize = 12.sp)
+                        Text("🧪 ${sp.challenge.label}", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+              }
             }
             Spacer(Modifier.height(16.dp))
         }
@@ -168,5 +168,35 @@ private fun Panel(title: String, modifier: Modifier = Modifier, border: Color = 
             if (action != null) Text(action, color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clickable(onClick = onAction))
         }
         content()
+    }
+}
+
+private val SERIES_NAMES = mapOf(1 to "ESCAPED ORGANISMS", 2 to "MUTATION SERIES · II", 3 to "MUTATION SERIES · III", 4 to "MUTATION SERIES · IV", 5 to "MUTATION SERIES · V")
+
+@Composable
+private fun SeriesHeader(series: Int, got: Int, total: Int) {
+    Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(SERIES_NAMES[series] ?: "SERIES $series", color = Violet, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+        Spacer(Modifier.width(8.dp))
+        Box(Modifier.weight(1f).height(1.dp).background(Line))
+        Spacer(Modifier.width(8.dp))
+        Text("$got / $total", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** A big bestiary card: the creature with its aura, name, DNA, rarity and power. */
+@Composable
+private fun SpeciesCard(sp: Species, got: Boolean, t: Float, modifier: Modifier, onClick: () -> Unit) {
+    Column(modifier.clip(RoundedCornerShape(14.dp)).background(Brush.verticalGradient(listOf(Color(0xFF181540), Color(0xFF0B0C22))))
+        .border(1.5.dp, if (got) sp.rarity.color else sp.rarity.color.copy(alpha = 0.35f), RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("${SPECIES.indexOf(sp) + 1}.", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            Text(sp.rarity.label, color = sp.rarity.color, fontSize = 9.sp, fontWeight = FontWeight.Black)
+        }
+        Canvas(Modifier.fillMaxWidth().height(110.dp).alpha(if (got) 1f else 0.8f)) { drawSpecies(sp, center, size.minDimension * 0.27f, t + sp.dna.hashCode() % 7) }
+        Text(if (got) sp.name else "???", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black, maxLines = 2, lineHeight = 14.sp)
+        Text("DNA: ${sp.dna}", color = Muted, fontSize = 10.sp)
+        Text("⚡ ${sp.power}", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }

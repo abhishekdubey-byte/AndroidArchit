@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=1.9.39">
+  <link rel="stylesheet" href="/css/style.css?v=1.9.40">
 </head>
 <body>
 
@@ -172,6 +172,7 @@
           <!-- Crystal Mines HUNT: appears when the phone opens the HUNT camera; guide the player live -->
           <div class="hunt-panel" id="huntPanel" hidden>
             <div class="hunt-head"><span class="hunt-title">🛰 TRACKER AI · HUNT LIVE</span><span class="hunt-dna" id="huntDna">🧬 0 / 10</span></div>
+            <div class="hunt-scene" id="huntScene">🔍 Reading the scene…</div>
             <div class="hunt-target" id="huntTarget">Scanning…</div>
             <div class="hunt-creatures" id="huntCreatures"></div>
             <div class="hunt-cmd">
@@ -182,6 +183,17 @@
                 <button data-arrow="right" title="Turn right">➡</button>
                 <button data-arrow="down" title="Look down">⬇</button>
                 <button data-arrow="forward" title="Move forward">⏫</button>
+              </div>
+              <div class="hunt-steer" title="Move the creature itself (the hunter sees it move)">
+                <span class="hunt-steer-label">🐾 Move creature</span>
+                <button data-steer="left" title="Move it left">◀</button>
+                <button data-steer="up" title="Move it up">▲</button>
+                <button data-steer="down" title="Move it down">▼</button>
+                <button data-steer="right" title="Move it right">▶</button>
+                <button data-steer="closer" title="Bring it closer">Closer</button>
+                <button data-steer="farther" title="Push it farther">Farther</button>
+                <button data-steer="freeze" title="Freeze it for 6 s">❄ Freeze</button>
+                <button data-steer="summon" class="summon" title="Pull it into the hunter's view">✦ Summon</button>
               </div>
               <form class="hunt-say" id="huntSay"><input id="huntText" maxlength="140" placeholder="Tracker AI override, e.g. It's behind you — RUN!"><button class="btn-primary">Send</button></form>
             </div>
@@ -504,6 +516,6 @@
     </div>
   </div>
 
-  <script src="/js/app.js?v=1.9.39"></script>
+  <script src="/js/app.js?v=1.9.40"></script>
 </body>
 </html>

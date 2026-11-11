@@ -180,13 +180,15 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
     var aiAt by remember { mutableFloatStateOf(-99f) }
     fun ai(text: String) { aiLine = text; aiAt = t }
     fun spawn(delaySec: Float = 0f) {
-        val sp = HuntStore.nextSpecies(wild?.sp?.id) ?: run { wild = null; return }
-        wild = Wild(sp, wrap(yaw + (if (Random.nextBoolean()) 1 else -1) * (60f + Random.nextFloat() * 110f)),
-            Random.nextFloat() * 20f - 10f, 12f + Random.nextFloat() * 10f + sp.rarity.ordinal * 2f, Random.nextFloat() * 100f).also {
+        val sp = HuntStore.nextSpecies(wild?.sp?.id, SceneSense.kind.value) ?: run { wild = null; return }
+        val place = SceneSense.placeFor(sp, yaw)   // hide it at a real object: behind the door, under the car, in the plant…
+        wild = Wild(sp, place?.first ?: wrap(yaw + (if (Random.nextBoolean()) 1 else -1) * (60f + Random.nextFloat() * 110f)),
+            place?.second ?: (Random.nextFloat() * 20f - 10f), 12f + Random.nextFloat() * 10f + sp.rarity.ordinal * 2f, Random.nextFloat() * 100f).also {
             it.moodUntil = t + delaySec
         }
         HuntSound.play("spot", 0.7f)
-        ai("New ${sp.rarity.label.lowercase()} signature detected. SCAN to pin it down.")
+        ai(if (place != null) "New ${sp.rarity.label.lowercase()} signature ${place.third}! SCAN to pin it down."
+           else "New ${sp.rarity.label.lowercase()} signature detected. SCAN to pin it down.")
     }
 
     // ---- intro: leaving the mine through the tunnel ----
@@ -220,7 +222,7 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
         return Offset(size.width / 2 + dx / H_FOV * size.width, size.height * 0.45f - dy / V_FOV * size.height + lunge * 30f * sin(t * 30))
     }
     fun onScreen(w: Wild) = abs(wrap(w.bearing - yaw)) < H_FOV / 2 && abs(w.elev - pitch) < V_FOV / 2
-    fun drawSize(w: Wild) = (size.width * 0.55f / w.dist.coerceAtLeast(2f)) * (if (w.mood == Mood.ATTACK) 1.25f else 1f)
+    fun drawSize(w: Wild) = (size.width * 0.8f / w.dist.coerceAtLeast(2f)) * (if (w.mood == Mood.ATTACK) 1.25f else 1f)
 
     // ---- the game loop: creature behaviour + challenges ----
     var steadyFor by remember { mutableFloatStateOf(0f) }
@@ -256,7 +258,13 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
                     if (vis && w.seenFor > (1.6f - spd * 0.4f + w.dist / 30f)) {
                         w.noticed = true
                         if (sp.challenge == Challenge.RECOVER || Random.nextInt(3) == 0) { w.mood = Mood.ATTACK; w.moodUntil = t + 0.7f }
-                        else { w.mood = Mood.FLEE; w.moodUntil = t + 1.8f + Random.nextFloat() * 1.5f * spd; w.fleeDir = if (dx >= 0) 1f else -1f; HuntSound.play("flee", 0.6f) }
+                        else {
+                            w.mood = Mood.FLEE; w.moodUntil = t + 1.8f + Random.nextFloat() * 1.5f * spd; w.fleeDir = if (dx >= 0) 1f else -1f; HuntSound.play("flee", 0.6f)
+                            SceneSense.anchors.value.filter { abs(wrap(it.bearing - w.bearing)) in 15f..120f }.randomOrNull()?.let { a ->
+                                w.fleeDir = if (wrap(a.bearing - w.bearing) >= 0) 1f else -1f
+                                ai("It's running toward the ${a.name} — CHASE IT!")
+                            }
+                        }
                     }
                 }
                 Mood.FLEE -> {
@@ -280,7 +288,9 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
             }
             // lost the trail: off screen too long → it relocates; SCAN to find it again
             if (w.offFor > 20f && t > revealUntil) {
-                w.bearing = wrap(yaw + (if (Random.nextBoolean()) 1 else -1) * (90f + Random.nextFloat() * 80f))
+                val hide = SceneSense.placeFor(sp, yaw)
+                w.bearing = hide?.first ?: wrap(yaw + (if (Random.nextBoolean()) 1 else -1) * (90f + Random.nextFloat() * 80f))
+                if (hide != null) { w.elev = hide.second; ai("It's hiding ${hide.third} now — SCAN!") }
                 w.dist = (w.dist + 6f).coerceAtMost(28f); w.offFor = 0f; w.mood = Mood.ROAM; w.seenFor = 0f
                 HuntSound.play("lost"); ai("Signal lost… it slipped away. SCAN the area!")
             }
@@ -298,9 +308,12 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
                     Challenge.SHAKE -> shakeHits >= 3
                     Challenge.NOISE -> if (micAllowed) loud > 0.55f else shakeHits >= 3
                     Challenge.STEPS -> w.dist <= 3.2f
+                    Challenge.LIGHT -> if (lux.isNaN()) steadyFor > 1.4f else lux > 400f
+                    Challenge.HIGH -> pitch > 22f
+                    Challenge.RANGED -> w.dist >= 4f && steadyFor > 0.8f
                     Challenge.ALL -> HuntStore.ORIGINAL_NINE.all { it in HuntStore.collected.value }
                     Challenge.CORE -> w.coreTaps >= 3
-                    else -> false        // PULSE (button), RECOVER / FLANK (timing, handled above)
+                    else -> false        // PULSE (button), SCAN (button), RECOVER / FLANK (timing, handled above)
                 }
                 if (ok) { w.openUntil = t + 5f; HuntSound.play("challenge"); ai("WEAKNESS EXPOSED — ${sp.weakness.lowercase()}. Capture within 5 s!") }
             }
@@ -312,6 +325,27 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
             if (!was && lockFor >= 0.7f) HuntSound.play("lock")
             HuntSound.music(when { lockFor >= 0.7f -> HuntSound.Music.LOCKED; vis -> HuntSound.Music.SPOTTED; else -> HuntSound.Music.EXPLORE })
         }
+    }
+
+    // ---- HQ steering from the dashboard: move the creature where the hunter should go ----
+    val steer by HuntStore.steer.collectAsState()
+    LaunchedEffect(steer?.id) {
+        val st = steer ?: return@LaunchedEffect
+        if (System.currentTimeMillis() - st.id > 5000) return@LaunchedEffect
+        val w = wild ?: return@LaunchedEffect
+        when (st.dir) {
+            "left" -> w.bearing = wrap(w.bearing - 20f)
+            "right" -> w.bearing = wrap(w.bearing + 20f)
+            "up" -> w.elev = (w.elev + 10f).coerceAtMost(35f)
+            "down" -> w.elev = (w.elev - 10f).coerceAtLeast(-35f)
+            "closer" -> w.dist = (w.dist - 3f).coerceAtLeast(2f)
+            "farther" -> w.dist = (w.dist + 3f).coerceAtMost(40f)
+            "summon" -> { w.bearing = wrap(yaw + Random.nextFloat() * 16f - 8f); w.elev = pitch - 4f; w.dist = w.dist.coerceAtMost(9f); w.mood = Mood.ROAM; w.offFor = 0f; revealUntil = t + 8f }
+            "freeze" -> { w.mood = Mood.REST; w.moodUntil = t + 6f }
+        }
+        HuntSound.play("scan", 0.5f)
+        ai(when (st.dir) { "summon" -> "HQ pulled the ${w.sp.rarity.label.lowercase()} signature into your view!"; "freeze" -> "HQ froze it for 6 s — GO!"
+            else -> "HQ is herding it ${st.dir.uppercase()} — follow the signal!" })
     }
 
     // ---- microphone level, only while a SONIC creature is in play ----
@@ -365,14 +399,19 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
         val fut = ProcessCameraProvider.getInstance(ctx)
         var provider: ProcessCameraProvider? = null
         var lastSent = 0L
+        var lastScene = 0L
+        SceneSense.reset()
         val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888).build()
         analysis.setAnalyzer(exec) { img ->
             val client = CompanionWebSocketClient.activeInstance
             val now = System.currentTimeMillis()
-            if (client != null && now - lastSent >= 140) {     // ~7 fps to the laptop, like Live Preview
-                lastSent = now
-                runCatching { val bm = rotated(img, 480); client.sendCameraFrame(jpeg64(bm, 55), "back", bm.width, bm.height) }
+            val wantFrame = client != null && now - lastSent >= 140      // ~7 fps to the laptop, like Live Preview
+            val wantScene = now - lastScene >= 1500                       // scene understanding ~0.7×/s
+            if (wantFrame || wantScene) runCatching {
+                val bm = rotated(img, 480)
+                if (wantScene) { lastScene = now; SceneSense.analyse(bm, yaw, pitch, H_FOV, V_FOV) }
+                if (wantFrame) { lastSent = now; client!!.sendCameraFrame(jpeg64(bm, 55), "back", bm.width, bm.height) }
             }
             img.close()
         }
@@ -452,7 +491,9 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
         revealUntil = t + 8f
         val w = wild
         if (Random.nextInt(4) == 0) { val n = 1 + Random.nextInt(3); HuntStore.addShards(ctx, n); HuntSound.play("shard"); toast = "💎 +$n crystal shards found while scanning" }
-        if (w != null) { val dx = wrap(w.bearing - yaw); ai("PING: ${w.sp.rarity.label} signature ${abs(dx).toInt()}° ${if (dx < 0) "LEFT" else "RIGHT"}, ${w.dist.toInt()} m. GO!") }
+        if (w != null && w.sp.challenge == Challenge.SCAN && onScreen(w) && w.dist <= RANGE) {
+            w.openUntil = t + 5f; HuntSound.play("challenge"); ai("Area scan revealed it — WEAKNESS EXPOSED. CAPTURE!")
+        } else if (w != null) { val dx = wrap(w.bearing - yaw); ai("PING: ${w.sp.rarity.label} signature ${abs(dx).toInt()}° ${if (dx < 0) "LEFT" else "RIGHT"}, ${w.dist.toInt()} m. GO!") }
         else ai("No signatures nearby.")
     }
 
@@ -479,7 +520,9 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
             client.sendHuntState(JSONObject().put("active", true).put("dna", HuntStore.collected.value.size).put("total", SPECIES.size)
                 .put("shards", HuntStore.shards.value).put("xp", HuntStore.xp.value).put("level", HuntStore.level())
                 .put("target", if (w != null && locked) w.sp.name else JSONObject.NULL).put("locked", locked).put("creatures", list)
-                .put("ai", aiLine ?: JSONObject.NULL))
+                .put("ai", aiLine ?: JSONObject.NULL)
+                .put("scene", SceneSense.kind.value.name.lowercase()).put("labels", JSONArray(SceneSense.labels.value))
+                .put("anchors", JSONArray(SceneSense.anchors.value.take(6).map { a -> JSONObject().put("name", a.name).put("dx", wrap(a.bearing - yaw).toInt()) })))
         }
     }
 
@@ -554,6 +597,9 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
                 Spacer(Modifier.width(6.dp))
                 HudChip("💎 $shards")
                 Spacer(Modifier.width(6.dp))
+                val scene by SceneSense.kind.collectAsState()
+                HudChip(when (scene) { SceneSense.Kind.INDOOR -> "🏠"; SceneSense.Kind.OUTDOOR -> "🌳"; else -> "🔍" })
+                Spacer(Modifier.width(6.dp))
                 HudChip(if (muted) "🔇" else "🔊", onClick = { HuntStore.toggleMute(ctx); if (!HuntStore.muted.value) HuntSound.music(HuntSound.Music.EXPLORE) })
                 Spacer(Modifier.weight(1f))
                 val w = wild
@@ -576,13 +622,12 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
         // target card
         wild?.takeIf { onScreen(it) && capturing == null }?.let { w ->
             val inR = w.dist <= RANGE
-            Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 170.dp).padding(horizontal = 16.dp).fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp)).background(Panel).border(1.dp, w.sp.rarity.color.copy(alpha = 0.7f), RoundedCornerShape(14.dp)).padding(12.dp)) {
+            Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 150.dp).padding(horizontal = 24.dp).fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp)).background(Color(0x880B1024)).border(1.dp, w.sp.rarity.color.copy(alpha = 0.6f), RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (w.sp.id in collected) w.sp.name else "??? · ${w.sp.rarity.label}", color = Color.White, fontWeight = FontWeight.Black, fontSize = 15.sp, modifier = Modifier.weight(1f))
                     Text("${w.dist.toInt()} m", color = if (inR) Color(0xFF4ADE80) else Color(0xFFFB923C), fontSize = 14.sp, fontWeight = FontWeight.Black)
                 }
-                Text("⚡ ${w.sp.power} · ${w.mood.name.lowercase()}", color = Color(0xFFCBD5E1), fontSize = 12.sp)
                 Text("🎯 ${w.sp.challenge.label}: ${w.sp.challenge.how}", color = if (exposed) Gold else Color(0xFFE2E8F0), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Text(when { !inR -> "Get within ${RANGE.toInt()} m — walk toward it"; exposed && locked -> "EXPOSED + LOCKED — CAPTURE DNA!"; exposed -> "EXPOSED — lock on fast!"; locked -> "Locked — now exploit the weakness"; else -> "Centre it to lock on" },
                     color = if (exposed) Gold else Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black)
@@ -642,20 +687,19 @@ private fun HuntCamera(onExit: () -> Unit, onBestiary: () -> Unit) {
 private fun arrowText(a: String?) = mapOf("left" to "TURN LEFT — NOW!", "right" to "TURN RIGHT — NOW!", "up" to "LOOK UP!", "down" to "LOOK DOWN!",
     "forward" to "MOVE FORWARD — FAST!", "back" to "STEP BACK!", "scan" to "SCAN THIS AREA!")[a] ?: ""
 
-/** The Tracker AI banner: urgent, pulsing, with a direction arrow when given. */
+/** The Tracker AI strip: urgent and pulsing, but slim and see-through so it never hides the camera view. */
 @Composable
 private fun TrackerBanner(title: String, text: String, arrow: String?, t: Float) {
     val glyph = when (arrow) { "left" -> "⬅"; "right" -> "➡"; "up" -> "⬆"; "down" -> "⬇"; "forward" -> "⏫"; "back" -> "⏬"; "scan" -> "📡"; else -> "🛰" }
-    val pulse = 0.65f + 0.35f * ((sin(t * 7) + 1f) / 2f)
-    Row(Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp))
-        .background(Brush.horizontalGradient(listOf(Color(0xEE3B0764), Color(0xEE7F1D1D))))
-        .border(2.dp, Color(0xFFF43F5E).copy(alpha = pulse), RoundedCornerShape(14.dp)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(glyph, fontSize = 28.sp, modifier = Modifier.alpha(pulse))
-        Spacer(Modifier.width(10.dp))
-        Column {
-            Text(title, color = Color(0xFFFDA4AF), fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-            Text(text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black)
-        }
+    val pulse = 0.55f + 0.45f * ((sin(t * 7) + 1f) / 2f)
+    Row(Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(10.dp))
+        .background(Color(0x99200A2E))
+        .border(1.dp, Color(0xFFF43F5E).copy(alpha = pulse), RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(glyph, fontSize = 16.sp, modifier = Modifier.alpha(pulse))
+        Spacer(Modifier.width(8.dp))
+        Text(title.removePrefix("🛰 ") + " · ", color = Color(0xFFFDA4AF), fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+        Text(text, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 2)
     }
 }
 

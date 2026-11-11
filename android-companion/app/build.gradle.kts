@@ -14,8 +14,8 @@ android {
         applicationId = "com.operator.companion"
         minSdk = 26
         targetSdk = 35
-        versionCode = 52
-        versionName = "1.9.24"
+        versionCode = 55
+        versionName = "1.9.27"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -34,6 +34,8 @@ android {
     }
     fun quoted(v: String?) = "\"" + (v ?: "").replace("\\", "\\\\").replace("\"", "\\\"") + "\""
     defaultConfig {
+        // real phones only (ARM): skip the emulator-only x86 copies of ML Kit's native engine (~24 MB)
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         buildConfigField("String", "DEFAULT_URLS", quoted(companionProps.getProperty("serverUrls")))
         buildConfigField("String", "DEFAULT_TOKEN", quoted(companionProps.getProperty("deviceToken")))
     }
@@ -120,4 +122,9 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // Crystal Mines scene understanding (on-device ML Kit): what's around (labels) + where objects are (boxes).
+    // Labelling uses the Play-services model (no APK size cost); object detection is small and bundled.
+    implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
+    implementation("com.google.mlkit:object-detection:17.0.2")
 }

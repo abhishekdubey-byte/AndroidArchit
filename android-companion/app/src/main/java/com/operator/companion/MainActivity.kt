@@ -73,12 +73,16 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handlePairing(intent)
         if (intent?.getBooleanExtra("powerboosters", false) == true) com.operator.companion.pb.PbStore.openRequested.value = true
 
+        NetworkGate.start(this)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = Color(0xFF07090E)
                 ) {
+                    // internet is required to open and play — wait here (auto-continues when back online)
+                    val online by NetworkGate.online.collectAsState()
+                    if (!online) { OfflineScreen(); return@Surface }
                     val tick = resumeTick.intValue
                     val missing = remember(tick) { PermissionSetup.missing(this) }
                     if (missing.isNotEmpty() && !setupSkipped.value) {
@@ -126,6 +130,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumeTick.intValue++
+        NetworkGate.recheck(this)   // e.g. back from network settings
         com.operator.companion.network.CompanionWebSocketClient.activeInstance?.refreshCapabilities()
         // a downloaded update is waiting: show Android's "Update" screen now that the app is in front
         com.operator.companion.relay.AppUpdater.pendingConfirm?.let { runCatching { startActivity(it) } }

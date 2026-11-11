@@ -1495,3 +1495,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, .video-chip:foc
 .hunt-say { flex: 1; display: flex; gap: 6px; min-width: 200px; }
 .hunt-say input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--card-line); background: rgba(0,0,0,0.3); color: #fff; }
 .hunt-target { white-space: pre-line; }
+.hunt-scene { font-size: 12px; color: #a7f3d0; white-space: pre-line; }
+.hunt-steer { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
+.hunt-steer-label { font-size: 11px; color: var(--text-muted); margin-right: 4px; }
+.hunt-steer button { height: 28px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--card-line); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; font-size: 12px; }
+.hunt-steer button:hover { background: rgba(34,211,238,0.2); }
+.hunt-steer button.summon { border-color: rgba(250,204,21,0.6); color: #fde68a; }

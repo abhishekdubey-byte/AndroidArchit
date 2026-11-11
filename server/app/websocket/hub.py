@@ -183,7 +183,8 @@ class WebSocketHub:
             comp_sock = self._get_companion_socket(dev)
             if comp_sock:
                 await comp_sock.send_json({"type": "HUNT_COMMAND", "payload": {
-                    "text": str(payload.get("text") or "")[:140], "arrow": str(payload.get("arrow") or "")}})
+                    "text": str(payload.get("text") or "")[:140], "arrow": str(payload.get("arrow") or ""),
+                    "steer": str(payload.get("steer") or "")}})   # steer = move the creature (left/right/…/summon/freeze)
 
         elif msg_type == "HUNT_STATE":
             # From the phone: live hunt state (DNA count, target, creatures) → dashboards watching that phone

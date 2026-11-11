@@ -63,6 +63,11 @@ class ControlCentreApp {
     this.setupRoutines();
 
     document.querySelectorAll("#huntPanel [data-arrow]").forEach((b) => b.onclick = () => this.sendHuntCommand("", b.dataset.arrow));
+    document.querySelectorAll("#huntPanel [data-steer]").forEach((b) => b.onclick = () => {
+      if (!this.activeDevice || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      this.ws.send(JSON.stringify({ type: "HUNT_COMMAND", device_id: this.activeDevice.id, payload: { steer: b.dataset.steer } }));
+      this.setCaptureStatus("ok", "🐾 Creature moved: " + b.dataset.steer);
+    });
     const say = document.getElementById("huntSay");
     if (say) say.onsubmit = (e) => { e.preventDefault(); const i = document.getElementById("huntText"); if (i.value.trim()) { this.sendHuntCommand(i.value.trim(), ""); i.value = ""; } };
 
@@ -564,6 +569,12 @@ class ControlCentreApp {
     panel.hidden = false;
     document.getElementById("huntDna").innerText = `🧬 ${p.dna || 0}/${p.total || 50} · 💎 ${p.shards || 0} · ⭐ LV ${p.level || 1}`;
     const tgt = document.getElementById("huntTarget");
+    const sc = document.getElementById("huntScene");
+    if (sc) {
+      const icon = p.scene === "indoor" ? "🏠 INDOOR" : p.scene === "outdoor" ? "🌳 OUTDOOR" : "🔍 reading the scene…";
+      const objs = (p.anchors || []).map((a) => `${a.name} ${a.dx < 0 ? "◀" + (-a.dx) + "°" : a.dx + "°▶"}`).join(" · ");
+      sc.innerText = `${icon}${(p.labels || []).length ? " — sees: " + p.labels.slice(0, 5).join(", ") : ""}${objs ? "\n📍 objects: " + objs : ""}`;
+    }
     const c0 = (p.creatures || [])[0];
     tgt.innerText = (p.ai ? `🛰 ${p.ai}\n` : "") + (c0 ? `${c0.name} · ${c0.dist} m · ${c0.mood} · weakness: ${c0.challenge} (${c0.how})${c0.exposed ? " — EXPOSED!" : ""}` : "Searching for a signature…")
       + (p.locked ? "\n🔒 LOCKED — tell them to CAPTURE" : "");

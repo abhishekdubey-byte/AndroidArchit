@@ -26,7 +26,7 @@ object HuntStore {
     val ORIGINAL_NINE = listOf("crystalclaw", "shardfang", "deepcrawler", "glowwing", "rockmaw", "venomshard", "nightglider", "toxicore", "earthreaper")
 
     /** Species that may appear next: rarer tiers unlock as the collection grows; commons are most frequent. */
-    fun nextSpecies(exclude: String? = null): Species? {
+    fun nextSpecies(exclude: String? = null, scene: SceneSense.Kind = SceneSense.Kind.UNKNOWN): Species? {
         val have = collected.value
         val tierOpen = mapOf(Rarity.COMMON to 0, Rarity.UNCOMMON to 3, Rarity.RARE to 8, Rarity.EPIC to 16, Rarity.LEGENDARY to 25)
         val pool = SPECIES.filter { it.id !in have && it.id != exclude }.filter {
@@ -35,7 +35,13 @@ object HuntStore {
         if (pool.isEmpty()) return null
         // the original ten come first-ish: give them extra weight
         val weights = pool.map { sp -> (when (sp.rarity) { Rarity.COMMON -> 10; Rarity.UNCOMMON -> 6; Rarity.RARE -> 4; Rarity.EPIC -> 2; Rarity.LEGENDARY -> 1 }) *
-            (if (sp.id in ORIGINAL_NINE || sp.challenge == Challenge.ALL) 3 else 1) }
+            (if (sp.id in ORIGINAL_NINE || sp.challenge == Challenge.ALL) 3 else 1) *
+            // outdoors: flyers + plant dwellers are more likely; indoors: crawlers and ground mammals
+            (when (scene) {
+                SceneSense.Kind.OUTDOOR -> if (sp.habitat() == Habitat.SKY || sp.habitat() == Habitat.PLANT) 2 else 1
+                SceneSense.Kind.INDOOR -> if (sp.habitat() == Habitat.GROUND) 2 else 1
+                else -> 1
+            }) }
         var r = kotlin.random.Random.nextInt(weights.sum())
         pool.forEachIndexed { i, sp -> r -= weights[i]; if (r < 0) return sp }
         return pool.last()
@@ -45,9 +51,14 @@ object HuntStore {
     data class Command(val text: String, val arrow: String?, val id: Long)
     val command = MutableStateFlow<Command?>(null)
 
+    /** Dashboard steering of the current creature: left/right/up/down/closer/farther/summon/freeze. */
+    data class Steer(val dir: String, val id: Long)
+    val steer = MutableStateFlow<Steer?>(null)
+
     fun init(ctx: Context) {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        collected.value = p.getStringSet("dna", emptySet())!!.toSet()
+        val valid = SPECIES.map { it.id }.toSet()   // drop ids of species that no longer exist
+        collected.value = p.getStringSet("dna", emptySet())!!.filter { it in valid }.toSet()
         shards.value = p.getInt("shards", 0); xp.value = p.getInt("xp", 0); muted.value = p.getBoolean("muted", false)
     }
 
@@ -78,6 +89,9 @@ object HuntStore {
 
     /** HUNT_COMMAND from the dashboard (only shown while a hunt is open). */
     fun onCommand(p: JSONObject) {
+        p.optString("steer").takeIf { it in setOf("left", "right", "up", "down", "closer", "farther", "summon", "freeze") }?.let {
+            steer.value = Steer(it, System.currentTimeMillis()); return
+        }
         val text = p.optString("text").take(140)
         val arrow = p.optString("arrow").takeIf { it in setOf("left", "right", "up", "down", "forward", "back", "scan") }
         if (text.isBlank() && arrow == null) return

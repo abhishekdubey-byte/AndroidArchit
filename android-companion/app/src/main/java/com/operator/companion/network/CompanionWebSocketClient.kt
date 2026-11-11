@@ -83,11 +83,23 @@ try {
             val intent = android.content.Intent(context, com.operator.companion.LivePreviewLauncherActivity::class.java).apply {
                 flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION
             }
-            context.startActivity(intent)
+            launchHelper(intent, { com.operator.companion.LivePreviewLauncherActivity.openedAt }) { msg -> notifyCameraState(false, msg) }
         } catch (e: Exception) {
             Log.e(TAG, "Could not start live preview: ${e.message}")
             notifyCameraState(false, "Phone blocked opening the camera. Grant background/overlay access in setup.")
         }
+    }
+
+    /**
+     * Start one of our invisible helper activities from the background and report at once if the phone blocked it
+     * (MIUI and others refuse background activity starts unless the app may show pop-ups while in the background).
+     */
+    private fun launchHelper(intent: android.content.Intent, openedAt: () -> Long, onBlocked: (String) -> Unit) {
+        val asked = android.os.SystemClock.elapsedRealtime()
+        context.startActivity(intent)
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (openedAt() < asked) onBlocked(BACKGROUND_BLOCKED)
+        }, 3000)
     }
 
     /** "Listen Live": the mic service is started through the same invisible foreground activity as the camera. */
@@ -98,7 +110,8 @@ try {
                 putExtra(com.operator.companion.LivePreviewLauncherActivity.EXTRA_TARGET,
                     com.operator.companion.LivePreviewLauncherActivity.TARGET_LISTEN)
             }
-            context.startActivity(intent)
+            launchHelper(intent, { com.operator.companion.LivePreviewLauncherActivity.openedAt }) { msg ->
+                com.operator.companion.service.PhoneListenService.notify(false, msg) }
         } catch (e: Exception) {
             com.operator.companion.service.PhoneListenService.notify(false, "Phone blocked the microphone: ${e.message}")
         }
@@ -112,9 +125,10 @@ try {
             return
         }
         try {
-            context.startActivity(android.content.Intent(context, com.operator.companion.ScreenConsentActivity::class.java).apply {
+            launchHelper(android.content.Intent(context, com.operator.companion.ScreenConsentActivity::class.java).apply {
                 flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION
-            })
+            }, { com.operator.companion.ScreenConsentActivity.openedAt }) { msg ->
+                com.operator.companion.service.ScreenCaptureService.notify(false, msg) }
         } catch (e: Exception) {
             com.operator.companion.service.ScreenCaptureService.notify(false, "Phone blocked the screen-sharing prompt: ${e.message}")
         }
@@ -182,6 +196,9 @@ try {
     companion object {
         @Volatile
         var activeInstance: CompanionWebSocketClient? = null
+        const val BACKGROUND_BLOCKED = "The phone blocked the app from opening in the background. Allow " +
+            "\u201cDisplay pop-up windows while running in the background\u201d (Xiaomi: App info \u2192 Other permissions) " +
+            "or \u201cDisplay over other apps\u201d for Operator Companion, or open the app on the phone."
     }
 
     init {

@@ -10,14 +10,21 @@ import com.operator.companion.service.ScreenCaptureService
 
 /**
  * Invisible activity that shows Android's own "Start recording or casting?" consent for the remote screen view and
- * hands the answer to [ScreenCaptureService]. Android requires this tap once per session; the app never stores
- * the token. Declining is reported to the laptop, which keeps using Accessibility screenshots.
+ * hands the answer to [ScreenCaptureService]. Android asks once per session unless screen sharing was pre-approved
+ * over USB (Permissions page; Android then answers at once, no dialog); the app never stores the token. Declining
+ * is reported to the laptop, which keeps using Accessibility screenshots.
  */
 class ScreenConsentActivity : Activity() {
+    companion object {
+        /** When this activity last really opened (elapsedRealtime): the launcher's check for a blocked start. */
+        @Volatile var openedAt = 0L
+    }
+
     private val REQ = 7101
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        openedAt = android.os.SystemClock.elapsedRealtime()
         overridePendingTransition(0, 0)
         if (savedInstanceState != null) return                  // recreated while the dialog is up: wait for it
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager

@@ -15,10 +15,13 @@ class LivePreviewLauncherActivity : Activity() {
     companion object {
         const val EXTRA_TARGET = "target"
         const val TARGET_LISTEN = "listen"    // "Listen Live": a microphone service needs the same foreground start
+        /** When this activity last really opened (elapsedRealtime): the launcher's check for a blocked start. */
+        @Volatile var openedAt = 0L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        openedAt = android.os.SystemClock.elapsedRealtime()
         overridePendingTransition(0, 0)
         // The lens was already set via LivePreviewService.setLens() before this activity was launched;
         // don't reset it here or a quick lens flip issued right after START would be lost.

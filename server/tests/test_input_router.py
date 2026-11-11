@@ -79,7 +79,7 @@ class TestInputRouter(unittest.TestCase):
         s = FakeSession(frame=(1280, 640))
         r = router(s)
         run(r.tap("d", 1080, 0))       # right edge, top of the (rotated) picture
-        self.assertEqual(touches(s)[0][1:3], (1280, 0))
+        self.assertEqual(touches(s)[0][1:3], (1279, 0))   # last pixel column, not one past it
 
     def test_swipe_interpolated(self):
         s = FakeSession()

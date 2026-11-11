@@ -32,10 +32,21 @@ def socket_name(scid: str) -> str:
     return "scrcpy_" + scid
 
 
-def server_command(scid: str, *, video: bool, max_size: int, bit_rate: int, max_fps: int) -> str:
-    """Shell command that starts the server on the phone (run via `adb shell`)."""
-    if not _SCID.match(scid):
+def device_jar(scid: str) -> str:
+    """Per-session jar path on the phone: two sessions starting at once never overwrite or delete each other's
+    copy (each server unlinks its own jar at start-up with cleanup=true)."""
+    if not _SCID.fullmatch(scid):
         raise ValueError("invalid scid")
+    return f"/data/local/tmp/scrcpy-server-{scid}.jar"
+
+
+def server_command(scid: str, *, video: bool, max_size: int, bit_rate: int, max_fps: int,
+                   jar: str = DEVICE_JAR) -> str:
+    """Shell command that starts the server on the phone (run via `adb shell`)."""
+    if not _SCID.fullmatch(scid):
+        raise ValueError("invalid scid")
+    if not re.fullmatch(r"/data/local/tmp/[A-Za-z0-9._-]+\.jar", jar):
+        raise ValueError("invalid jar path")
     params = [
         f"scid={scid}", "log_level=info", "tunnel_forward=true", "audio=false", "control=true",
         f"video={'true' if video else 'false'}", "video_codec=h264", f"max_size={int(max_size)}",
@@ -43,7 +54,9 @@ def server_command(scid: str, *, video: bool, max_size: int, bit_rate: int, max_
         "send_device_meta=false", "send_dummy_byte=true", "send_codec_meta=true", "send_frame_meta=true",
         "cleanup=true", "power_off_on_close=false", "clipboard_autosync=false",
     ]
-    return (f"CLASSPATH={DEVICE_JAR} app_process / com.genymobile.scrcpy.Server {SCRCPY_VERSION} "
+    if not video:
+        params.append("power_on=false")   # an input-only session must not switch the screen on by itself
+    return (f"CLASSPATH={jar} app_process / com.genymobile.scrcpy.Server {SCRCPY_VERSION} "
             + " ".join(params))
 
 
@@ -177,7 +190,21 @@ def text_events(text: str) -> List[bytes]:
     return [struct.pack(">BI", _TYPE_TEXT, len(c)) + c for c in chunks]
 
 
+# Characters scrcpy 2.7 can type: ASCII via the Virtual key map, accented vowels/ñ via KeyComposition (dead keys),
+# ç/Ç/ß directly. Anything else (ø, å, æ, µ, Devanagari, emoji…) would be skipped silently → the companion types it.
+_COMPOSABLE = set("àáâãäèéêëìíîïòóôõöùúûüýÿÀÁÂÃÄÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜÝñÑçÇß")
+
+
 def scrcpy_can_type(text: str) -> bool:
-    """scrcpy types through the phone's KeyCharacterMap: ASCII and accented Latin-1 letters work;
-    Devanagari, emoji etc. do not (those go through the companion app)."""
-    return all(c == "\n" or " " <= c <= "~" or (c.isalpha() and ord(c) <= 0xFF) for c in text)
+    return all(c == "\n" or " " <= c <= "~" or c in _COMPOSABLE for c in text)
+
+
+def _i16fp(f: float) -> int:
+    """Float in [-1, 1] → signed 16-bit fixed point (sc_float_to_i16fp)."""
+    i = int(max(-1.0, min(1.0, f)) * 0x8000)
+    return max(-0x8000, min(0x7FFF, i))
+
+
+def scroll_event(x: int, y: int, frame_w: int, frame_h: int, hscroll: float, vscroll: float) -> bytes:
+    """INJECT_SCROLL_EVENT (type 3, 21 bytes); one mouse-wheel notch = ±1.0."""
+    return struct.pack(">BiiHHhhi", 3, int(x), int(y), int(frame_w), int(frame_h), _i16fp(hscroll), _i16fp(vscroll), 0)

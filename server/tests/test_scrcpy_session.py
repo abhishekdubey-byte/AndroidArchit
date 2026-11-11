@@ -50,6 +50,8 @@ class TestSession(ScrcpySession):
 
     async def _adb(self, *args):
         self.adb_calls.append(args)
+        if args[:3] == ("forward", "--no-rebind", "tcp:0"):
+            return 0, f"{self.fake_port}\n", ""   # adb prints the port it allocated
         return 0, "", ""
 
     async def _push_jar(self, jar):
@@ -57,9 +59,6 @@ class TestSession(ScrcpySession):
 
     async def _spawn_server(self, command):
         self.spawned.append(command)
-
-    def _free_port(self):
-        return self.fake_port
 
 
 def video_stream(*packets) -> bytes:
@@ -83,7 +82,8 @@ class TestScrcpySession(unittest.IsolatedAsyncioTestCase):
         await s.stop()  # idempotent
         removes = [c for c in s.adb_calls if c[:2] == ("forward", "--remove")]
         self.assertEqual(len(removes), 1)
-        self.assertTrue(any(c[0] == "forward" and c[1] == f"tcp:{port}" for c in s.adb_calls))
+        self.assertTrue(any(c[:3] == ("forward", "--no-rebind", "tcp:0") for c in s.adb_calls))
+        self.assertIn(("forward", "--remove", f"tcp:{port}"), s.adb_calls)   # tunnel removed once connected
         self.assertIn(" com.genymobile.scrcpy.Server 2.7 ", s.spawned[0])
         phone.server.close()
 
@@ -158,3 +158,58 @@ class TestServerJar(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSessionHardening(unittest.IsolatedAsyncioTestCase):
+    async def test_forward_is_atomic_no_rebind_port_from_adb(self):
+        phone = FakePhone(video_stream(frame(CONFIG, config=True)), close_video=False)
+        port = await phone.start()
+
+        class AtomicForward(ScrcpySession):
+            def __init__(self):
+                super().__init__("adb", "serial", jar_path=Path("unused.jar"))
+                self.adb_calls = []
+
+            async def _adb(self, *args):
+                self.adb_calls.append(args)
+                if args[:3] == ("forward", "--no-rebind", "tcp:0"):
+                    return 0, f"{port}\n", ""      # adb prints the port it picked
+                return 0, "", ""
+
+            async def _push_jar(self, jar):
+                pass
+
+            async def _spawn_server(self, command):
+                self.command = command
+
+        s = AtomicForward()
+        await s.start()
+        self.assertEqual(s.port, port)
+        fwd = [c for c in s.adb_calls if c[0] == "forward" and c[1] != "--remove"][0]
+        self.assertEqual(fwd[:3], ("forward", "--no-rebind", "tcp:0"))
+        self.assertIn(f"/data/local/tmp/scrcpy-server-{s.scid}.jar", s.command)   # per-session jar: no clobbering
+        await s.stop()
+        self.assertIn(("forward", "--remove", f"tcp:{port}"), s.adb_calls)
+        phone.server.close()
+
+
+class TestProtocolHardening(unittest.TestCase):
+    def test_scid_trailing_newline_rejected(self):
+        from app.services.scrcpy_protocol import server_command
+        with self.assertRaises(ValueError):
+            server_command("deadbeef\n", video=True, max_size=1280, bit_rate=1, max_fps=1)
+
+    def test_packet_cap(self):
+        self.assertLessEqual(ss.MAX_PACKET, 4 * 1024 * 1024)
+
+
+class TestControlOnlyCommand(unittest.TestCase):
+    def test_input_only_session_does_not_power_on_screen(self):
+        from app.services.scrcpy_protocol import server_command
+        self.assertIn(" power_on=false", server_command("00000001", video=False, max_size=1280, bit_rate=1, max_fps=1))
+        self.assertNotIn("power_on=false", server_command("00000001", video=True, max_size=1280, bit_rate=1, max_fps=1))
+
+    def test_jar_path_validated(self):
+        from app.services.scrcpy_protocol import server_command
+        with self.assertRaises(ValueError):
+            server_command("00000001", video=True, max_size=1, bit_rate=1, max_fps=1, jar="/sdcard/x;reboot.jar")

@@ -8,21 +8,23 @@ import asyncio
 import collections
 import hashlib
 import os
-import socket
 import struct
+import threading
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Optional, Tuple
 
 from ..config import STORAGE_DIR
-from .scrcpy_protocol import (DEVICE_JAR, SCRCPY_VERSION, new_scid, parse_codec_meta, parse_frame_header,
+from .scrcpy_protocol import (SCRCPY_VERSION, device_jar, new_scid, parse_codec_meta, parse_frame_header,
                               server_command, socket_name, sps_dimensions)
 
 SCRCPY_SERVER_URL = f"https://github.com/Genymobile/scrcpy/releases/download/v{SCRCPY_VERSION}/scrcpy-server-v{SCRCPY_VERSION}"
 # Official checksum, published in upstream doc/build.md and install_release.sh at tag v2.7
 SCRCPY_SERVER_SHA256 = "a23c5659f36c260f105c022d27bcb3eafffa26070e7baa9eda66d01377a1adba"
-MAX_PACKET = 16 * 1024 * 1024
+MAX_PACKET = 4 * 1024 * 1024        # a 1280-line key frame is ~150 KB; anything near this is not a real packet
+MAX_JAR_BYTES = 1024 * 1024         # the v2.7 server is 71 KB
+_jar_lock = threading.Lock()        # first-run downloads from two sessions must not share one .part file
 
 
 class MirrorUnavailable(Exception):
@@ -38,12 +40,11 @@ class VideoPacket:
 
 
 def _download(url: str, dest: Path) -> None:
-    with urllib.request.urlopen(url, timeout=30) as r, open(dest, "wb") as f:
-        while True:
-            chunk = r.read(65536)
-            if not chunk:
-                break
-            f.write(chunk)
+    with urllib.request.urlopen(url, timeout=30) as r:
+        data = r.read(MAX_JAR_BYTES + 1)
+    if len(data) > MAX_JAR_BYTES:
+        raise MirrorUnavailable("downloaded scrcpy server is unexpectedly large")
+    dest.write_bytes(data)
 
 
 def _sha256(path: Path) -> str:
@@ -52,6 +53,11 @@ def _sha256(path: Path) -> str:
 
 def ensure_server_jar(vendor_dir: Path = STORAGE_DIR / "vendor") -> Path:
     """The pinned scrcpy server, downloaded once and checksum-verified."""
+    with _jar_lock:
+        return _ensure_server_jar(vendor_dir)
+
+
+def _ensure_server_jar(vendor_dir: Path) -> Path:
     vendor_dir.mkdir(parents=True, exist_ok=True)
     jar = vendor_dir / f"scrcpy-server-v{SCRCPY_VERSION}"
     if jar.exists() and _sha256(jar) == SCRCPY_SERVER_SHA256:
@@ -73,7 +79,7 @@ def ensure_server_jar(vendor_dir: Path = STORAGE_DIR / "vendor") -> Path:
 
 
 class ScrcpySession:
-    CONNECT_TIMEOUT = 3.0  # seconds for the phone-side server to start listening
+    CONNECT_TIMEOUT = 6.0  # seconds for the phone-side server to start listening (measured ~2.5 s on a 2018 phone)
 
     def __init__(self, adb_path: str, serial: str, *, video: bool = True, max_size: int = 1280,
                  bit_rate: int = 8_000_000, max_fps: int = 60, jar_path: Optional[Path] = None):
@@ -81,6 +87,7 @@ class ScrcpySession:
         self.max_size, self.bit_rate, self.max_fps = max_size, bit_rate, max_fps
         self.jar_path = jar_path
         self.scid = new_scid()
+        self.device_jar = device_jar(self.scid)
         self.port: Optional[int] = None
         self.width = self.height = 0
         self.frame_size: Tuple[int, int] = (0, 0)
@@ -106,7 +113,7 @@ class ScrcpySession:
         return p.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
     async def _push_jar(self, jar: Path) -> None:
-        rc, _, err = await self._adb("push", str(jar), DEVICE_JAR)
+        rc, _, err = await self._adb("push", str(jar), self.device_jar)
         if rc != 0:
             raise MirrorUnavailable(f"could not copy the mirror server to the phone ({err.strip()[:120]})")
 
@@ -115,11 +122,6 @@ class ScrcpySession:
             self.adb_path, "-s", self.serial, "shell", command, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         self._log_task = asyncio.create_task(self._collect_log())
-
-    def _free_port(self) -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
 
     # ---- lifecycle ----
     async def _collect_log(self):
@@ -157,22 +159,28 @@ class ScrcpySession:
         try:
             jar = self.jar_path or await asyncio.to_thread(ensure_server_jar)
             await self._push_jar(jar)
-            self.port = self._free_port()
-            rc, _, err = await self._adb("forward", f"tcp:{self.port}", f"localabstract:{socket_name(self.scid)}")
-            if rc != 0:
-                raise MirrorUnavailable(f"adb forward failed ({err.strip()[:120]})")
+            # adb picks the port itself (tcp:0) and never rebinds one already in use: no window in which
+            # another session could take the same port and receive this phone's screen and input
+            rc, out, err = await self._adb("forward", "--no-rebind", "tcp:0", f"localabstract:{socket_name(self.scid)}")
+            port = out.strip().splitlines()[-1].strip() if out.strip() else ""
+            if rc != 0 or not port.isdigit():
+                raise MirrorUnavailable(f"adb forward failed ({(err or out).strip()[:120]})")
+            self.port = int(port)
             self._forwarded = True
             await self._spawn_server(server_command(self.scid, video=self.video, max_size=self.max_size,
-                                                    bit_rate=self.bit_rate, max_fps=self.max_fps))
+                                                    bit_rate=self.bit_rate, max_fps=self.max_fps, jar=self.device_jar))
             first = await self._connect_first()
             if self.video:
                 self._video = first
                 self._control = await asyncio.open_connection("127.0.0.1", self.port)
                 meta = await asyncio.wait_for(self._video[0].readexactly(12), 10)
-                _, self.width, self.height = parse_codec_meta(meta)
+                codec, self.width, self.height = parse_codec_meta(meta)
+                if codec != "h264":   # 0 = the phone's encoder failed, 1 = the stream was disabled
+                    raise MirrorUnavailable("the phone's video encoder did not start")
                 self.frame_size = (self.width, self.height)
             else:
                 self._control = first
+            await self._remove_forward()   # connected: the tunnel is no longer needed (same as upstream scrcpy)
         except BaseException:
             await self.stop()
             raise
@@ -225,12 +233,17 @@ class ScrcpySession:
                     pass
         if self._log_task:
             self._log_task.cancel()
-        if self._forwarded:
-            self._forwarded = False
-            try:
-                await self._adb("forward", "--remove", f"tcp:{self.port}")
-            except Exception:
-                pass
+        await self._remove_forward()
+
+    async def _remove_forward(self) -> None:
+        if not self._forwarded or self.port is None:
+            return
+        try:
+            rc, _, _ = await asyncio.shield(self._adb("forward", "--remove", f"tcp:{self.port}"))
+            if rc == 0:
+                self._forwarded = False
+        except Exception:
+            pass
 
     async def __aenter__(self):
         await self.start()

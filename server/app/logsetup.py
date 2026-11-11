@@ -17,6 +17,10 @@ import time
 from collections import OrderedDict, deque
 from pathlib import Path
 
+from .stdio_utf8 import force_utf8_stdio
+
+force_utf8_stdio()  # before anything below (or any service) prints: Windows consoles default to cp1252
+
 TTY = sys.__stdout__.isatty()
 COLOR = TTY and not os.getenv("NO_COLOR")
 LOG_DIR = Path(__file__).resolve().parent.parent / "storage" / "logs"

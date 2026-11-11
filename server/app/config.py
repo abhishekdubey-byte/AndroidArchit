@@ -1,5 +1,10 @@
+import ntpath
 import os
+import posixpath
+import shutil
+import sys
 from pathlib import Path
+from typing import Callable, Mapping, Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STORAGE_DIR = BASE_DIR / "storage"
@@ -14,7 +19,38 @@ for directory in [STORAGE_DIR, SCREENSHOT_DIR, DOWNLOADS_DIR, UPLOADS_DIR, STATI
 SERVER_HOST = os.getenv("ACC_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("ACC_PORT", "8000"))
 DEBUG = os.getenv("ACC_DEBUG", "True").lower() == "true"
-ADB_PATH = os.getenv("ADB_PATH", "/usr/bin/adb")
+def _sdk_adb(base: str) -> str:
+    """platform-tools/adb inside an SDK folder, in that folder's own path style (Windows or POSIX)."""
+    if "\\" in base or ntpath.splitdrive(base)[0]:
+        return ntpath.join(base, "platform-tools", "adb.exe")
+    return posixpath.join(base, "platform-tools", "adb")
+
+
+def resolve_adb_path(env: Mapping[str, str] = os.environ,
+                     which: Callable[[str], Optional[str]] = shutil.which,
+                     exists: Callable[[str], bool] = os.path.isfile) -> str:
+    """Find adb on Windows, Linux and macOS: ADB_PATH, then PATH, then the usual SDK folders."""
+    explicit = env.get("ADB_PATH")
+    if explicit:
+        if not exists(explicit):
+            print(f"[Startup] ADB_PATH={explicit} does not exist; using it anyway", file=sys.stderr)
+        return explicit
+    on_path = which("adb")
+    if on_path:
+        return on_path
+    candidates = [_sdk_adb(env[k]) for k in ("ANDROID_HOME", "ANDROID_SDK_ROOT") if env.get(k)]
+    if env.get("LOCALAPPDATA"):
+        candidates.append(_sdk_adb(ntpath.join(env["LOCALAPPDATA"], "Android", "Sdk")))
+    if env.get("HOME"):
+        candidates.append(_sdk_adb(posixpath.join(env["HOME"], "Android", "Sdk")))
+        candidates.append(_sdk_adb(posixpath.join(env["HOME"], "Library", "Android", "sdk")))
+    for path in candidates:
+        if exists(path):
+            return path
+    return "/usr/bin/adb"
+
+
+ADB_PATH = resolve_adb_path()
 
 
 # ---- Per-phone capture folders: storage/downloads/<Brand_Model_ID>/ ----

@@ -27,7 +27,7 @@ PHONE_MESSAGES = {"DEVICE_HELLO", "RELAY_BOUND_ACK", "DEVICE_CAPABILITIES", "DEV
                   "APP_UPDATE_CHECK", "APP_UPDATE_PULL", "APP_LIFECYCLE_STATUS", "WAITLIST_GET", "WAITLIST_JOIN",
                   "GAME_JOIN", "GAME_STRIKE", "GAME_LEAVE",
                   "CALL_ACTIVE", "CALL_ENDED", "PHONE_AUDIO_CHUNK", "PHOTO_CAPTURED", "VIDEO_RECORDED",
-                  "CAMERA_FRAME", "CAMERA_STREAM_STATE", "CAMERA_AUDIO", "HUNT_STATE", "PHONE_AUDIO_STATE"}
+                  "CAMERA_FRAME", "CAMERA_STREAM_STATE", "CAMERA_AUDIO", "HUNT_STATE", "PHONE_AUDIO_STATE", "SCREEN_STATE"}
 from ..services.pb_gateway import PHONE_TYPES as PB_PHONE_TYPES
 PHONE_MESSAGES = PHONE_MESSAGES | PB_PHONE_TYPES
 
@@ -74,6 +74,9 @@ class WebSocketHub:
         self._listeners: Dict[str, Set[Any]] = {}             # device_id -> dashboards with Listen Live on
         self._legacy_pcm: Set[str] = set()                    # phones whose camera audio is old 16 kHz PCM
         self._phone_media: Dict[str, Set[str]] = {}           # companion id -> live media it can send ("aac", ...)
+        # Remote screen as H.264 from the companion (MediaProjection), for phones not on USB
+        self._remote_screen: Dict[str, dict] = {}             # device_id -> {"state", "error", "frames", "changed"}
+        self._remote_screen_failed: Dict[str, float] = {}     # device_id -> when the phone last refused/failed
         self.input_router = InputRouter(adb_bridge, device_manager, self.mirror_sessions)
         self.pb = None  # PowerBoosters gateway, attached in main.py
 
@@ -219,6 +222,8 @@ class WebSocketHub:
                 if target is not None:
                     device_id = target.id
                 self.fanout.subscribe(websocket, device_id)
+                if device_id not in self._remote_screen:
+                    self._remote_screen_failed.pop(device_id, None)   # the user asked again: the phone may ask again
                 self.active_streaming_devices.add(device_id)
                 if device_id not in self.streaming_tasks or self.streaming_tasks[device_id].done():
                     self.streaming_tasks[device_id] = asyncio.create_task(self._screen_stream_loop(device_id))
@@ -311,6 +316,20 @@ class WebSocketHub:
                         self.fanout.unsubscribe(ws, f"{did}#mic")
                 self._maybe_forget_mic(did)
             await self.broadcast_to_dashboards({"type": "PHONE_AUDIO_STATE", "device_id": did, "payload": payload})
+
+        elif msg_type == "SCREEN_STATE":
+            # From the phone: remote screen sharing started / refused / stopped
+            _d = self._device_for_companion(device_id)
+            did = _d.id if _d else device_id
+            st = self._remote_screen.get(did)
+            if st is not None:
+                if payload.get("active"):
+                    st["state"] = "live"
+                    st["info"] = payload
+                else:
+                    st["state"] = "failed" if payload.get("error") else "stopped"
+                    st["error"] = payload.get("error")
+                st["changed"].set()
 
         elif msg_type == "START_CAMERA_SAVE":
             from ..services.cam_record import CamRecorder, FFMPEG
@@ -866,6 +885,9 @@ class WebSocketHub:
 
         async def tell(reason):
             nonlocal notice
+            if reason is None:                    # picture flowing (it paints over the notice): forget the reason
+                notice = None
+                return
             if reason != notice:
                 notice = reason
                 print(f"[WebSocketHub] Screen mirror for {dev.name}: {reason}")
@@ -888,6 +910,12 @@ class WebSocketHub:
                     notice = None
                     if device_id in self.active_streaming_devices and self.fanout.h264_viewers(device_id) > 0:
                         await asyncio.sleep(2.0)  # stream ended (unplugged / server died): retry shortly
+                    continue
+            if (remote and self.fanout.h264_viewers(device_id) > 0
+                    and "screen_h264" in self._phone_media.get(dev.relay_id, set())
+                    and time.time() - self._remote_screen_failed.get(device_id, 0) > self.REMOTE_SCREEN_RETRY):
+                if await self._run_remote_screen(dev, device_id, tell):
+                    notice = None
                     continue
             start_time = asyncio.get_event_loop().time()
             try:
@@ -922,7 +950,7 @@ class WebSocketHub:
         """Hardware-H.264 camera packets from a phone → H.264 viewers (stream '<device>#cam') and the recorder.
         Returns False for every other binary frame (file transfers, PowerBoosters chunks…)."""
         header, payload = parse_device_binary(data)
-        if not header or header.get("type") != "CAMERA_PKT" or not self.relays:
+        if not header or header.get("type") not in ("CAMERA_PKT", "SCREEN_PKT") or not self.relays:
             return False
         me = self.relays.for_socket(websocket)
         if me is None:
@@ -936,6 +964,17 @@ class WebSocketHub:
             if kind not in (1, 2, 3, 4, 5) or not 0 <= pts < 2 ** 62:
                 return True
         except (TypeError, ValueError, OverflowError):
+            return True
+        if header.get("type") == "SCREEN_PKT":
+            st = self._remote_screen.get(did)
+            if st is None or kind not in (1, 2, 3):
+                return True                                  # nobody asked for it (late packets after a stop)
+            await self.fanout.publish(did, VideoPacket(pts, kind == 1, kind == 2, payload))
+            if kind != 1:
+                st["frames"] += 1
+                if st["state"] != "live":
+                    st["state"] = "live"
+                    st["changed"].set()
             return True
         rec = self.cam_recorders.get(did)
         if kind in (4, 5):                                   # AAC microphone (same clock as the video)
@@ -953,6 +992,66 @@ class WebSocketHub:
         if rec is not None and hasattr(rec, "submit_video"):
             rec.submit_video(kind, pts, payload)
         return True
+
+    REMOTE_SCREEN_RETRY = 300.0        # after a refusal, don't ask the phone again for 5 min (unless the user restarts)
+    REMOTE_SCREEN_CONSENT = 45.0       # seconds the user has to tap "Start now" on the phone
+
+    async def _run_remote_screen(self, dev, device_id: str, tell) -> bool:
+        """H.264 screen from the companion app (phone on Wi-Fi / relay) until it is no longer wanted.
+        False = the phone refused or failed (caller falls back to Accessibility screenshots)."""
+        sock = self._get_companion_socket(dev)
+        if sock is None:
+            return False
+        st = {"state": "starting", "error": None, "frames": 0, "changed": asyncio.Event(), "info": None}
+        self._remote_screen[device_id] = st
+        try:
+            await sock.send_json({"type": "START_SCREEN_PKT", "payload": {}})
+        except Exception:
+            self._remote_screen.pop(device_id, None)
+            return False
+        await tell("Allow screen sharing on the phone (tap “Start now”)…")
+        asked = time.monotonic()
+        legacy = asyncio.create_task(self._snapshots_for_jpeg_viewers(device_id, dev.serial))
+        ok = True
+        try:
+            while True:
+                cur = self.device_manager.get_device(device_id)
+                if cur is None or device_id not in self.active_streaming_devices or self.fanout.h264_viewers(device_id) == 0:
+                    break
+                if self._on_usb(cur) and FAST_MIRROR:
+                    break                                    # plugged in: the USB mirror takes over
+                if self._get_companion_socket(cur) is not sock:
+                    break                                    # phone reconnected: start over with the new socket
+                if st["state"] == "failed" or (st["state"] == "starting"
+                                               and time.monotonic() - asked > self.REMOTE_SCREEN_CONSENT):
+                    reason = st["error"] or "No answer on the phone"
+                    await tell(f"{reason} — showing slower screenshots instead. Turn mirroring off and on to ask again.")
+                    ok = False
+                    break
+                if st["state"] == "stopped":
+                    await tell("Screen sharing ended on the phone — showing slower screenshots instead.")
+                    ok = False
+                    break
+                if st["state"] == "live" and st["frames"]:
+                    await tell(None)
+                st["changed"].clear()
+                try:
+                    await asyncio.wait_for(st["changed"].wait(), 1.0)
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            legacy.cancel()
+            if self._remote_screen.get(device_id) is st:
+                del self._remote_screen[device_id]
+            if st["state"] in ("starting", "live"):
+                try:
+                    await sock.send_json({"type": "STOP_SCREEN_PKT", "payload": {}})
+                except Exception:
+                    pass
+            self.fanout.forget_device(device_id)
+        if not ok:
+            self._remote_screen_failed[device_id] = time.time()
+        return ok
 
     async def _run_fast_mirror(self, dev, device_id: str, tell) -> bool:
         """Hardware-H.264 mirror over USB until it ends. False = could not start (caller uses snapshots)."""

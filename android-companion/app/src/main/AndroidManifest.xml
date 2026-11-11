@@ -169,6 +169,15 @@
             android:foregroundServiceType="camera|microphone"
             android:exported="false" />
 
+        <!-- Android's screen-sharing consent for the remote screen view (one tap per session) -->
+        <activity
+            android:name=".ScreenConsentActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleInstance" />
+
         <!-- "Listen Live": the phone microphone streamed to the dashboard -->
         <service
             android:name=".service.PhoneListenService"

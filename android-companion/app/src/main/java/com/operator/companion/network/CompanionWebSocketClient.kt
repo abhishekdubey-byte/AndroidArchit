@@ -104,6 +104,21 @@ try {
         }
     }
 
+    /** Remote screen as H.264: already sharing → just a fresh key frame; else Android's consent dialog first. */
+    private fun startRemoteScreen() {
+        if (com.operator.companion.service.ScreenCaptureService.running) {
+            com.operator.companion.service.ScreenCaptureService.requestKeyFrame(context.applicationContext)
+            return
+        }
+        try {
+            context.startActivity(android.content.Intent(context, com.operator.companion.ScreenConsentActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION
+            })
+        } catch (e: Exception) {
+            com.operator.companion.service.ScreenCaptureService.notify(false, "Phone blocked the screen-sharing prompt: ${e.message}")
+        }
+    }
+
     private fun stopCameraPreview() {
         com.operator.companion.service.LivePreviewService.stop(context.applicationContext)
         notifyCameraState(false, null)
@@ -125,6 +140,17 @@ try {
         // never let OkHttp's 16 MB limit kill the link (deltas and audio frames are the droppable ones)
         if ((kind == 3 || kind == 5) && ws.queueSize() > 8L * 1024 * 1024) return
         val header = JSONObject().put("type", "CAMERA_PKT").put("k", kind).put("pts", ptsUs)
+            .toString().toByteArray(Charsets.UTF_8)
+        val frame = ByteBuffer.allocate(2 + header.size + data.size)
+        frame.putShort(header.size.toShort()).put(header).put(data)
+        ws.send(frame.array().toByteString())
+    }
+
+    /** One remote-screen H.264 packet (MediaProjection, Phase 5): same framing as camera packets, type SCREEN_PKT. */
+    fun sendScreenPacket(kind: Int, ptsUs: Long, data: ByteArray) {
+        val ws = webSocket ?: return
+        if (kind == 3 && ws.queueSize() > 8L * 1024 * 1024) return
+        val header = JSONObject().put("type", "SCREEN_PKT").put("k", kind).put("pts", ptsUs)
             .toString().toByteArray(Charsets.UTF_8)
         val frame = ByteBuffer.allocate(2 + header.size + data.size)
         frame.putShort(header.size.toShort()).put(header).put(data)
@@ -720,6 +746,8 @@ try {
                 "HUNT_COMMAND" -> com.operator.companion.hunt.HuntStore.onCommand(payload)
                 "STOP_CAMERA_STREAM" -> stopCameraPreview()
                 "START_PHONE_AUDIO" -> startListenLive()
+                "START_SCREEN_PKT" -> startRemoteScreen()
+                "STOP_SCREEN_PKT" -> com.operator.companion.service.ScreenCaptureService.stop(context.applicationContext)
                 "STOP_PHONE_AUDIO" -> com.operator.companion.service.PhoneListenService.stop(context.applicationContext)
 
                 "RECORD_VIDEO" -> {

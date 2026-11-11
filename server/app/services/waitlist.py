@@ -10,13 +10,13 @@ _FILE = STORAGE_DIR / "waitlist.json"
 
 def _load() -> Set[str]:
     try:
-        return set(json.loads(_FILE.read_text()))
+        return set(json.loads(_FILE.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         return set()
 
 
 def _save(ids: Set[str]):
-    _FILE.write_text(json.dumps(sorted(ids)))
+    _FILE.write_text(json.dumps(sorted(ids)), encoding="utf-8")
 
 
 def count() -> int:

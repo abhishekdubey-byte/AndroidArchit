@@ -112,7 +112,7 @@ class RelayRegistry:
     def __init__(self):
         self.clients: Dict[str, RelayClient] = {}
         try:
-            raw = json.loads(BINDINGS_FILE.read_text())
+            raw = json.loads(BINDINGS_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raw = {}
         # {relay_id: {"h": sha256(secret), "ok": confirmed}}; old format (plain hash) = confirmed
@@ -122,7 +122,7 @@ class RelayRegistry:
         self.refused: Dict[str, float] = {}  # relay_id -> last time its connection was refused
 
     def _save_bindings(self):
-        BINDINGS_FILE.write_text(json.dumps(self.bindings))
+        BINDINGS_FILE.write_text(json.dumps(self.bindings), encoding="utf-8")
         BINDINGS_FILE.chmod(0o600)
 
     def authorize(self, relay_id: str, secret: Optional[str], ws=None) -> Tuple[bool, Optional[str]]:

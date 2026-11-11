@@ -28,13 +28,13 @@ class RoutineService:
     # ---- storage ----
     def _load(self):
         try:
-            self.items = json.loads(PATH.read_text()) if PATH.exists() else []
+            self.items = json.loads(PATH.read_text(encoding="utf-8")) if PATH.exists() else []
         except Exception:
             self.items = []
 
     def _save(self):
         tmp = PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.items, indent=2))
+        tmp.write_text(json.dumps(self.items, indent=2), encoding="utf-8")
         tmp.replace(PATH)
 
     # ---- CRUD ----

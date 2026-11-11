@@ -101,11 +101,13 @@ class DeviceManager:
     async def refresh_devices(self) -> List[Device]:
         """Discovers and refreshes state for all connected devices."""
         attached = await self.adb.list_attached_devices()
-        current_serials = set()
+        current_serials = {d_meta["serial"] for d_meta in attached}
+        # A serial that went away may come back as a different phone (same Wi-Fi ip:port, emulator-5554…):
+        # never let it inherit the old phone's companion identity.
+        self.prune_relay_id_cache(current_serials)
 
         for d_meta in attached:
             serial = d_meta["serial"]
-            current_serials.add(serial)
             try:
                 dev = await self.adb.get_device_details(serial)
                 old_dev = self.devices.get(dev.id)
@@ -282,6 +284,11 @@ class DeviceManager:
                 return await asyncio.to_thread(app_update.signer_digest, local) == ours
         except Exception:
             return False
+
+    def prune_relay_id_cache(self, current_serials) -> None:
+        for serial in list(self._relay_id_cache):
+            if serial not in current_serials:
+                del self._relay_id_cache[serial]
 
     async def _relay_id_for(self, serial: str) -> str:
         rid, checked = self._relay_id_cache.get(serial, ("", 0.0))

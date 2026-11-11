@@ -23,6 +23,18 @@ FFMPEG = shutil.which("ffmpeg")
 FPS = 8
 
 
+MAX_FRAME_BYTES = 4 * 1024 * 1024   # a live-preview JPEG is ~10-60 KB; anything this big is dropped
+
+
+def clamp_sample_rate(rate) -> int:
+    """Phone-supplied audio rate, limited to real-world values (silence padding grows with it)."""
+    try:
+        rate = int(rate)
+    except (TypeError, ValueError):
+        return 16000
+    return max(8000, min(48000, rate))
+
+
 def display_name(path: Optional[str]) -> Optional[str]:
     """Bare file name of a saved recording (works for Windows and POSIX paths)."""
     if not path:
@@ -91,12 +103,12 @@ class CamRecorder:
             pass
 
     def submit(self, jpeg: bytes) -> None:
-        if getattr(self, "_accepting", False):
+        if getattr(self, "_accepting", False) and len(jpeg) <= MAX_FRAME_BYTES:
             self._enqueue(("v", jpeg, None, time.monotonic()), True)
 
     def submit_audio(self, pcm: bytes, rate: int = 16000) -> None:
         if getattr(self, "_accepting", False):
-            self._enqueue(("a", pcm, rate, time.monotonic()), False)
+            self._enqueue(("a", pcm, clamp_sample_rate(rate), time.monotonic()), False)
 
     def drain(self) -> None:
         """Stop accepting, write everything already queued, stop the worker."""

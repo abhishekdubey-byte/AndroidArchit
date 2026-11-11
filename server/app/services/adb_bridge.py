@@ -308,7 +308,7 @@ class ADBBridge:
         return True
 
     async def launch_package(self, serial: str, package_name: str) -> bool:
-        cmd = f"monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
+        cmd = f"monkey -p {shlex.quote(package_name)} -c android.intent.category.LAUNCHER 1"
         out = await self.run_device_shell(serial, cmd)
         return "Events injected: 1" in out
 
@@ -495,7 +495,7 @@ class ADBBridge:
             return True
 
     async def list_files(self, serial: str, path: str = "/sdcard/Download") -> List[Dict[str, Any]]:
-        out = await self.run_device_shell(serial, f"ls -la '{path}'")
+        out = await self.run_device_shell(serial, f"ls -la {shlex.quote(path)}")
         files = []
         for line in out.splitlines():
             line = line.strip()

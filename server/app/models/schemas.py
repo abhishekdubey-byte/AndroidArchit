@@ -82,7 +82,8 @@ class TextAction(BaseModel):
     text: str
 
 class LaunchAppAction(BaseModel):
-    package_name: str
+    # Android package names only: this value reaches `adb shell` (never let shell syntax through)
+    package_name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$", max_length=255)
 
 class UINode(BaseModel):
     index: int

@@ -49,3 +49,26 @@ class TestResolveAdbPath(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResolveAdbHardening(unittest.TestCase):
+    def test_relative_which_result_ignored(self):
+        from app.config import resolve_adb_path
+        # Python on Windows searches the current directory first: a planted .\adb.EXE / adb.bat must not win
+        self.assertEqual(resolve_adb_path({}, lambda n: r".\adb.EXE", lambda p: False), "/usr/bin/adb")
+
+    def test_windows_asks_for_the_exe(self):
+        from app import config
+        asked = []
+        config.resolve_adb_path({}, lambda n: asked.append(n) or None, lambda p: False, windows=True)
+        self.assertEqual(asked, ["adb.exe"])
+
+    def test_bare_adb_path_resolved_through_path(self):
+        import io
+        from contextlib import redirect_stderr
+        from app.config import resolve_adb_path
+        err = io.StringIO()
+        with redirect_stderr(err):
+            got = resolve_adb_path({"ADB_PATH": "adb"}, lambda n: "/opt/platform-tools/adb", lambda p: False)
+        self.assertEqual(got, "/opt/platform-tools/adb")
+        self.assertEqual(err.getvalue(), "")

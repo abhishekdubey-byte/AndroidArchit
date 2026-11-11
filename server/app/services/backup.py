@@ -75,13 +75,13 @@ def _safe_name(text: str) -> str:
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False))
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
 
 
 def _read_json(path: Path, default):
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return default
 

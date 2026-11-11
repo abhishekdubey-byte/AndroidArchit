@@ -29,7 +29,7 @@ def latest(edition: Optional[str]) -> Optional[Dict]:
     if not apk.exists() or not meta.exists():
         return None
     try:
-        m = json.loads(meta.read_text())
+        m = json.loads(meta.read_text(encoding="utf-8"))
         return {"edition": ed, "path": apk, "version_code": int(m["version_code"]),
                 "version_name": str(m["version_name"]), "size": apk.stat().st_size,
                 "sha256": str(m.get("sha256", ""))}
@@ -53,7 +53,7 @@ def publish(edition: str, apk_path: Path, version_code: int, version_name: str) 
     (APP_DIR / f"{ed}.apk").write_bytes(data)
     meta = {"version_code": int(version_code), "version_name": str(version_name),
             "sha256": hashlib.sha256(data).hexdigest()}
-    (APP_DIR / f"{ed}.json").write_text(json.dumps(meta))
+    (APP_DIR / f"{ed}.json").write_text(json.dumps(meta), encoding="utf-8")
     return {"edition": ed, **meta, "size": len(data)}
 
 

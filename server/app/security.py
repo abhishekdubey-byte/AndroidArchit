@@ -28,14 +28,14 @@ def _load(path, env_name: str = "") -> str:
     env = os.getenv(env_name) if env_name else None
     if env:
         return env
-    if path.exists() and path.read_text().strip():
-        return path.read_text().strip()
+    if path.exists() and path.read_text(encoding="utf-8").strip():
+        return path.read_text(encoding="utf-8").strip()
     return _new(path)
 
 
 def _new(path) -> str:
     tok = secrets.token_urlsafe(24)
-    path.write_text(tok)
+    path.write_text(tok, encoding="utf-8")
     path.chmod(0o600)
     return tok
 
@@ -62,13 +62,13 @@ def get_device_token() -> str:
 
 def load_remote_config() -> dict:
     try:
-        return json.loads(REMOTE_FILE.read_text())
+        return json.loads(REMOTE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
 def save_remote_config(cfg: dict):
-    REMOTE_FILE.write_text(json.dumps(cfg, indent=2))
+    REMOTE_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     REMOTE_FILE.chmod(0o600)  # holds the cloud relay hub key
 
 

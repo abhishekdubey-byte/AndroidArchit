@@ -26,17 +26,27 @@ def _sdk_adb(base: str) -> str:
     return posixpath.join(base, "platform-tools", "adb")
 
 
+def _absolute(path: Optional[str]) -> bool:
+    return bool(path) and (ntpath.isabs(path) or posixpath.isabs(path))
+
+
 def resolve_adb_path(env: Mapping[str, str] = os.environ,
                      which: Callable[[str], Optional[str]] = shutil.which,
-                     exists: Callable[[str], bool] = os.path.isfile) -> str:
+                     exists: Callable[[str], bool] = os.path.isfile,
+                     windows: bool = os.name == "nt") -> str:
     """Find adb on Windows, Linux and macOS: ADB_PATH, then PATH, then the usual SDK folders."""
+    exe = "adb.exe" if windows else "adb"  # never a .bat/.cmd wrapper (run through cmd.exe on Windows)
     explicit = env.get("ADB_PATH")
     if explicit:
+        if not any(sep in explicit for sep in ("/", "\\")):   # a bare name such as "adb": look it up on PATH
+            found = which(explicit)
+            if _absolute(found):
+                return found
         if not exists(explicit):
             print(f"[Startup] ADB_PATH={explicit} does not exist; using it anyway", file=sys.stderr)
         return explicit
-    on_path = which("adb")
-    if on_path:
+    on_path = which(exe)
+    if _absolute(on_path):  # Python on Windows also searches the current directory: ignore such hits
         return on_path
     candidates = [_sdk_adb(env[k]) for k in ("ANDROID_HOME", "ANDROID_SDK_ROOT") if env.get(k)]
     if env.get("LOCALAPPDATA"):

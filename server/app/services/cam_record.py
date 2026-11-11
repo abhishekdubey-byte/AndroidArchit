@@ -7,6 +7,7 @@ duplicated/dropped against the wall clock so the video runs in real time; the ph
 Saved under storage/downloads, same place as the other captures.
 """
 import io
+import queue
 import shutil
 import subprocess
 import threading
@@ -22,7 +23,16 @@ FFMPEG = shutil.which("ffmpeg")
 FPS = 8
 
 
+def display_name(path: Optional[str]) -> Optional[str]:
+    """Bare file name of a saved recording (works for Windows and POSIX paths)."""
+    if not path:
+        return None
+    return str(path).replace("\\", "/").rsplit("/", 1)[-1]
+
+
 class CamRecorder:
+    QUEUE_MAX = 240  # ~30 s of frames at 8 fps; beyond that the oldest video frames are dropped
+
     def __init__(self, device_name: str, fps: int = FPS, folder: Optional[Path] = None):
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (device_name or "device"))[:40]
         self.path = Path(folder or DOWNLOADS_DIR) / f"live_{safe}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
@@ -38,6 +48,63 @@ class CamRecorder:
         self._audio = None
         self.audio_rate = 16000
         self.audio_bytes = 0
+        self._start_worker()
+
+    # ---- background writer: the websocket handler only enqueues (it must never block the event loop) ----
+    def _start_worker(self):
+        self._q: "queue.Queue" = queue.Queue(maxsize=self.QUEUE_MAX)
+        self._accepting = True
+        self._worker = threading.Thread(target=self._run, name="cam-record-writer", daemon=True)
+        self._worker.start()
+
+    def _run(self):
+        while True:
+            item = self._q.get()
+            if item is None:
+                return
+            kind, data, rate, at = item
+            try:
+                if kind == "v":
+                    self.write(data, at=at)
+                else:
+                    self.write_audio(data, rate, at=at)
+            except Exception:
+                pass
+
+    def _enqueue(self, item, is_video: bool):
+        try:
+            self._q.put_nowait(item)
+            return
+        except queue.Full:
+            pass
+        with self._q.mutex:  # make room by dropping the oldest *video* frame (audio gaps are far more audible)
+            for i, old in enumerate(self._q.queue):
+                if old is not None and old[0] == "v":
+                    del self._q.queue[i]
+                    break
+            else:
+                if is_video:
+                    return  # queue is all audio: drop this frame instead
+        try:
+            self._q.put_nowait(item)
+        except queue.Full:
+            pass
+
+    def submit(self, jpeg: bytes) -> None:
+        if getattr(self, "_accepting", False):
+            self._enqueue(("v", jpeg, None, time.monotonic()), True)
+
+    def submit_audio(self, pcm: bytes, rate: int = 16000) -> None:
+        if getattr(self, "_accepting", False):
+            self._enqueue(("a", pcm, rate, time.monotonic()), False)
+
+    def drain(self) -> None:
+        """Stop accepting, write everything already queued, stop the worker."""
+        if not getattr(self, "_accepting", False):
+            return
+        self._accepting = False
+        self._q.put(None)
+        self._worker.join(timeout=60)
 
     def _start(self, w: int, h: int):
         w -= w % 2
@@ -49,7 +116,7 @@ class CamRecorder:
              "-vf", f"scale={self.size[0]}:{self.size[1]}", "-movflags", "+faststart", str(self.video_path)],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    def write(self, jpeg: bytes):
+    def write(self, jpeg: bytes, at: Optional[float] = None):
         if self._closed or not FFMPEG:
             return
         with self._lock:
@@ -64,7 +131,8 @@ class CamRecorder:
                         jpeg = self._fit(im)   # normalise odd/other-sized frames to the locked size
                 if self._proc and self._proc.stdin:
                     # keep the video on the wall clock: repeat this frame up to "now" (or drop it if ahead)
-                    due = int((time.monotonic() - self.t0) * self.fps) + 1
+                    now = at if at is not None else time.monotonic()  # arrival time, not processing time
+                    due = int((now - self.t0) * self.fps) + 1
                     for _ in range(max(0, min(due - self.frames, self.fps * 5))):
                         self._proc.stdin.write(jpeg)
                         self.frames += 1
@@ -73,7 +141,7 @@ class CamRecorder:
             except Exception:
                 pass
 
-    def write_audio(self, pcm: bytes, rate: int = 16000):
+    def write_audio(self, pcm: bytes, rate: int = 16000, at: Optional[float] = None):
         if self._closed or not pcm:
             return
         with self._lock:
@@ -82,7 +150,8 @@ class CamRecorder:
                     self.audio_rate = rate
                     self._audio = open(self.audio_path, "wb")
                 # pad gaps (late start / dropped chunks) with silence so audio stays aligned with video
-                expect = int((time.monotonic() - self.t0) * self.audio_rate) * 2 - len(pcm)
+                now = at if at is not None else time.monotonic()
+                expect = int((now - self.t0) * self.audio_rate) * 2 - len(pcm)
                 gap = expect - self.audio_bytes
                 if -gap > self.audio_rate // 5 * 2:     # > 200 ms ahead (burst after a stall) → drop it
                     return
@@ -108,6 +177,7 @@ class CamRecorder:
         return buf.getvalue()
 
     def close(self) -> Optional[str]:
+        self.drain()  # frames still queued belong in the file
         with self._lock:
             if self._closed:
                 return str(self.path) if self.path.exists() else None

@@ -8,6 +8,7 @@ from typing import Dict, Set, Any, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 from ..config import DOWNLOADS_DIR, device_capture_dir, download_url
 from ..services.device_manager import DeviceManager
+from ..services.cam_record import display_name
 from ..services.adb_bridge import ADBBridge, UnsupportedText
 from ..services.ai_agent import AIAgentOperator
 from ..models.schemas import ApprovalDecision
@@ -226,12 +227,12 @@ class WebSocketHub:
             rec = self.cam_recorders.get(did)
             if msg_type == "CAMERA_FRAME" and rec and payload.get("data_base64"):
                 try:
-                    rec.write(base64.b64decode(payload["data_base64"]))
+                    rec.submit(base64.b64decode(payload["data_base64"]))  # never blocks the event loop
                 except Exception:
                     pass
             if msg_type == "CAMERA_AUDIO" and rec and payload.get("pcm_base64"):
                 try:
-                    rec.write_audio(base64.b64decode(payload["pcm_base64"]), int(payload.get("sample_rate") or 16000))
+                    rec.submit_audio(base64.b64decode(payload["pcm_base64"]), int(payload.get("sample_rate") or 16000))
                 except Exception:
                     pass
             if msg_type == "CAMERA_STREAM_STATE" and payload.get("active") is False and did in self.cam_recorders:
@@ -760,7 +761,7 @@ class WebSocketHub:
         path = await asyncio.get_event_loop().run_in_executor(None, rec.close)
         await self.broadcast_to_dashboards({"type": "CAMERA_SAVE_STATE", "device_id": device_id,
                                             "payload": {"saving": False, "path": path,
-                                                        "name": (path.split("/")[-1] if path else None)}})
+                                                        "name": display_name(path)}})
 
     async def _broadcast_game(self):
         msg = {"type": "GAME_STATE", "payload": self.game.snapshot()}

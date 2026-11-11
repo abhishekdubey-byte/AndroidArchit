@@ -179,6 +179,13 @@ def level_for(xp: int, base: int = 100) -> Dict[str, int]:
 
 
 class PowerBoosters:
+    def close(self) -> None:
+        """Release the SQLite handle (Windows cannot delete or move an open database file). Idempotent."""
+        with self._lock:
+            if self.db is not None:
+                self.db.close()
+                self.db = None
+
     def __init__(self, db_file: Path = DB_FILE, files_dir: Path = FILES_DIR):
         self.files_dir = Path(files_dir)
         self.files_dir.mkdir(parents=True, exist_ok=True)

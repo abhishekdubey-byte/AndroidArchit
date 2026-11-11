@@ -60,13 +60,15 @@ class TestGateway(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         self.relays, self.hub = FakeRelays(), FakeHub()
-        self.gw = PBGateway(PowerBoosters(d / "pb.db", d / "f"), self.hub, FakeDM(), self.relays)
+        self.pb = PowerBoosters(d / "pb.db", d / "f")
+        self.gw = PBGateway(self.pb, self.hub, FakeDM(), self.relays)
         self.a, self.b = FakeWS(), FakeWS()
         for rid, ws in (("A", self.a), ("B", self.b)):
             self.relays.clients[rid] = FakeClient(ws, rid)
             self.hub.device_clients[rid] = ws
 
     def tearDown(self):
+        self.pb.close()
         self.tmp.cleanup()
 
     def run_(self, coro):

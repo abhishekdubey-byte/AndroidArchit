@@ -15,7 +15,16 @@ class TestPowerBoosters(unittest.TestCase):
             self.pb.ensure_member(dev, dev)
 
     def tearDown(self):
+        self.pb.close()
         self.tmp.cleanup()
+
+    def test_close_releases_db_file(self):
+        d = Path(self.tmp.name)
+        pb = PowerBoosters(d / "other.db", d / "other_files")
+        pb.close()
+        pb.close()  # idempotent
+        (d / "other.db").unlink()  # Windows refuses while a connection is open
+        self.assertFalse((d / "other.db").exists())
 
     def upload(self, dev, data=b"hello world", name="p.jpg", purpose="submission", uid="upload0001"):
         f = self.pb.upload_init(uploader=dev, owner_device=dev, purpose=purpose, name=name, mime="image/jpeg",

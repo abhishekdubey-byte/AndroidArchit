@@ -24,7 +24,6 @@ import android.util.Size
 import android.view.Surface
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
-import java.io.File
 
 /**
  * Live camera as hardware H.264 (roadmap Phase 3).
@@ -299,19 +298,6 @@ class CameraH264Streamer(
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
             return pm.currentThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE
         }
-        return maxSkinTempC() >= 45.0
-    }
-
-    /** Hottest '*therm*' zone in °C (zones report °C, deci-°C or milli-°C depending on the vendor). */
-    private fun maxSkinTempC(): Double {
-        var hottest = 0.0
-        File("/sys/class/thermal").listFiles()?.forEach { zone ->
-            val type = runCatching { File(zone, "type").readText().trim() }.getOrNull() ?: return@forEach
-            if (!type.contains("therm")) return@forEach
-            val raw = runCatching { File(zone, "temp").readText().trim().toDouble() }.getOrNull() ?: return@forEach
-            val c = when { raw > 1000 -> raw / 1000; raw > 200 -> raw / 10; else -> raw }
-            if (c in 0.0..120.0 && c > hottest) hottest = c
-        }
-        return hottest
+        return ThermalZones.read() >= 45.0
     }
 }

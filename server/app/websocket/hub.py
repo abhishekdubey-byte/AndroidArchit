@@ -65,6 +65,7 @@ class WebSocketHub:
         self.fanout = MediaFanout()                # H.264 packets → dashboards (per-viewer backpressure)
         self.mirror_sessions: Dict[str, ScrcpySession] = {}  # device_id -> running fast USB mirror
         self._fast_mirror_failed: Dict[str, float] = {}      # device_id -> when fast mirroring last failed
+        self._fast_mirror_retry: Dict[str, float] = {}       # device_id -> seconds to wait before trying again
         self._cam_codec: Dict[str, str] = {}                  # device_id -> "h264" / "jpeg" (live camera format)
         self._cam_config: Dict[str, bytes] = {}               # device_id -> latest H.264 SPS/PPS from the phone
         self._cam_rotation: Dict[str, int] = {}               # device_id -> camera sensor rotation (degrees cw)
@@ -117,6 +118,7 @@ class WebSocketHub:
         if event_type == "DEVICE_CONNECTED" and isinstance(payload, dict) and payload.get("id"):
             # a replug starts clean: no 60 s of slow snapshots because the last attempt hit the unplug
             self._fast_mirror_failed.pop(payload["id"], None)
+            self._fast_mirror_retry.pop(payload["id"], None)
             self.input_router.forget_device(payload["id"])
         await self.broadcast_to_dashboards({
             "type": event_type,
@@ -905,7 +907,7 @@ class WebSocketHub:
                 await asyncio.sleep(2.0)
                 continue
             if (on_usb and FAST_MIRROR and self.fanout.h264_viewers(device_id) > 0
-                    and time.time() - self._fast_mirror_failed.get(device_id, 0) > 60):
+                    and time.time() - self._fast_mirror_failed.get(device_id, 0) > self._fast_mirror_retry.get(device_id, 60.0)):
                 if await self._run_fast_mirror(dev, device_id, tell):
                     notice = None
                     if device_id in self.active_streaming_devices and self.fanout.h264_viewers(device_id) > 0:
@@ -1055,21 +1057,32 @@ class WebSocketHub:
             self._remote_screen_failed[device_id] = time.time()
         return ok
 
+    # adb errors of a phone that was plugged in a moment ago (not ready yet), not of a phone that can't mirror
+    _ADB_NOT_READY = ("not found", "offline", "unauthorized", "no devices", "failed to get feature", "device still")
+
+    def _mirror_failed(self, device_id: str, reason: str) -> bool:
+        """Remember a fast-mirror failure. A not-ready adb is retried after 3 s (doubling to 60 s); anything else
+        waits 60 s. Returns True for the not-ready case."""
+        self._fast_mirror_failed[device_id] = time.time()
+        transient = any(s in reason.lower() for s in self._ADB_NOT_READY)
+        prev = self._fast_mirror_retry.get(device_id, 0.0)
+        self._fast_mirror_retry[device_id] = min(60.0, max(3.0, prev * 2)) if transient else 60.0
+        return transient
+
     async def _run_fast_mirror(self, dev, device_id: str, tell) -> bool:
         """Hardware-H.264 mirror over USB until it ends. False = could not start (caller uses snapshots)."""
         session = ScrcpySession(self.adb.adb_path, dev.serial, max_size=MIRROR_MAX_SIZE, bit_rate=MIRROR_BITRATE,
                                 max_fps=MIRROR_FPS)
         try:
             await session.start()
-        except MirrorUnavailable as e:
-            self._fast_mirror_failed[device_id] = time.time()
-            await tell(f"Fast mirroring unavailable: {e} — using slow snapshots")
-            return False
         except Exception as e:
-            self._fast_mirror_failed[device_id] = time.time()
-            await tell(f"Fast mirroring unavailable: {e} — using slow snapshots")
+            if self._mirror_failed(device_id, str(e)):
+                await tell("Phone just connected — starting the fast mirror…")
+            else:
+                await tell(f"Fast mirroring unavailable: {e} — using slow snapshots")
             return False
         self.mirror_sessions[device_id] = session
+        self._fast_mirror_retry.pop(device_id, None)
         busy = getattr(self.device_manager, "busy_serials", None)
         if busy is not None:
             busy.add(dev.serial)

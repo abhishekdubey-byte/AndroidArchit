@@ -187,7 +187,9 @@ class ScreenCaptureService : Service() {
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
                 setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000)   // still screen: keep frames coming
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, 30f)
+                // 30 fps cap: official from Android 10; the same key is honoured by many older encoders too (scrcpy
+                // sets it on every version) - measured 46 fps uncapped on an Android 9 phone
+                setFloat("max-fps-to-encoder", 30f)
                 val caps = enc.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).encoderCapabilities
                 if (caps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR))
                     setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)

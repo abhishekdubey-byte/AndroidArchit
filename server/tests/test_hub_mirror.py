@@ -111,6 +111,38 @@ class TestHubMirror(unittest.IsolatedAsyncioTestCase):
         self.hub.active_streaming_devices.discard("d")
         await asyncio.wait_for(self.hub.streaming_tasks["d"], 5)
 
+    async def test_phone_not_ready_after_replug_is_retried_within_seconds(self):
+        """Seen on the phone: right after plugging in, adb says "device not found" for a moment; that must not
+        lock the dashboard into 60 s of slow snapshots."""
+        FakeSession.fail = "could not copy the mirror server to the phone (adb: error: failed to get feature set: device 's' not found)"
+        await self.hub._process_dashboard_message(self.ws, {"type": "CLIENT_CAPS", "payload": {"h264": True}})
+        await self.start_stream()
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if FakeSession.instances:
+                break
+        self.assertEqual(self.hub._fast_mirror_retry["d"], 3.0)
+        notices = [m["payload"]["reason"] for m in self.ws.json if m.get("type") == "SCREEN_UNAVAILABLE"]
+        self.assertTrue(any("starting the fast mirror" in n for n in notices), notices)
+        FakeSession.fail = None                                  # adb ready now
+        self.hub._fast_mirror_failed["d"] -= 3.1                 # 3 s later
+        for _ in range(300):
+            await asyncio.sleep(0.01)
+            if "d" in self.hub.mirror_sessions:
+                break
+        self.assertIn("d", self.hub.mirror_sessions)
+        self.assertNotIn("d", self.hub._fast_mirror_retry)
+        self.hub.active_streaming_devices.discard("d")
+        await self.hub._stop_unwatched("d")
+
+    def test_retry_backoff(self):
+        h = self.hub
+        self.assertTrue(h._mirror_failed("d", "device offline"))
+        self.assertTrue(h._mirror_failed("d", "device offline"))
+        self.assertEqual(h._fast_mirror_retry["d"], 6.0)
+        self.assertFalse(h._mirror_failed("d", "no encoder"))
+        self.assertEqual(h._fast_mirror_retry["d"], 60.0)
+
     async def test_jpeg_only_dashboard_uses_snapshots(self):
         await self.start_stream()  # no CLIENT_CAPS: an old/remote browser
         for _ in range(100):

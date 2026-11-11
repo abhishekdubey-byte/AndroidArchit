@@ -54,9 +54,15 @@ class H264Player {
   constructor(canvas, { onFirstFrame, onStuck, onUnsupported, clock } = {}) {
     this.canvas = canvas;
     this.clock = clock || null;
+    // decoded frames held for the clock: 12 covers a 200 ms audio buffer at 30 fps (measured: 5 forced nearly every
+    // frame out ~50 ms early). A decoder with a smaller output pool is protected in push().
+    this.maxHeld = 12;
     this._queue = [];                // decoded frames waiting for their moment (clock mode)
     this._raf = 0;
+    this._timer = 0;
+    this._lastDrawAt = 0;
     this.lateDropped = 0;
+    this.forcedEarly = 0;            // frames shown before their sound because too many were held
     this.ctx = canvas.getContext("2d");
     this.onFirstFrame = onFirstFrame;
     this.onStuck = onStuck;          // decoder far behind / errored: ask the server to resync this viewer
@@ -98,6 +104,10 @@ class H264Player {
       }
     } else {
       this._backlogSince = 0;
+    }
+    if (this._queue.length && this.decoder.decodeQueueSize > 2) {
+      this.forcedEarly++;                           // decoder waiting for a free frame: give one back now
+      this._draw(this._queue.shift());
     }
     let data = pkt.payload;
     if (isKey && this.config) {                     // key frames carry SPS/PPS in front (Annex-B)
@@ -142,14 +152,29 @@ class H264Player {
       this._flushQueue(false);
       return this._draw(frame);
     }
+    // Already late (the pipeline backed up, e.g. animation frames were throttled): skip it so the decoder catches
+    // up at decode speed instead of staying behind for good - but keep the picture alive at least 4 times a second.
+    if (now - frame.timestamp > 100000 && performance.now() - this._lastDrawAt < 250) {
+      this.lateDropped++;
+      frame.close();
+      return;
+    }
     this._queue.push(frame);
-    // hold at most a few frames: the decoder's output pool is small and must never run dry
-    while (this._queue.length > 5) this._draw(this._queue.shift());
-    if (!this._raf) this._raf = requestAnimationFrame(() => this._present());
+    // hold a bounded number of frames: the decoder's output pool is limited and must never run dry
+    while (this._queue.length > this.maxHeld) { this.forcedEarly++; this._draw(this._queue.shift()); }
+    this._schedule();
+  }
+
+  // Next presentation: on the next animation frame, or after 100 ms if animation frames are throttled/paused.
+  _schedule() {
+    if (this._raf || this._timer) return;
+    this._raf = requestAnimationFrame(() => this._present());
+    this._timer = setTimeout(() => this._present(), 100);
   }
 
   _present() {
-    this._raf = 0;
+    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+    if (this._timer) { clearTimeout(this._timer); this._timer = 0; }
     if (!this._queue.length) return;
     const now = this.clock ? this.clock() : null;
     if (now === null || document.hidden) { this._flushQueue(); return; }
@@ -165,7 +190,7 @@ class H264Player {
       this._queue = this._queue.slice(due + 1);
       this._draw(f);
     }
-    if (this._queue.length) this._raf = requestAnimationFrame(() => this._present());
+    if (this._queue.length) this._schedule();
   }
 
   // Stop waiting for the clock: show the newest queued frame (or none) and release the rest.
@@ -173,6 +198,7 @@ class H264Player {
     const q = this._queue;
     this._queue = [];
     if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+    if (this._timer) { clearTimeout(this._timer); this._timer = 0; }
     if (!q.length) return;
     const last = showNewest ? q.pop() : null;
     for (const f of q) f.close();
@@ -206,6 +232,7 @@ class H264Player {
     }
     this.frames++;
     this._fpsFrames++;
+    this._lastDrawAt = performance.now();
     const now = performance.now();
     if (now - this._fpsAt >= 1000) {
       this.fps = (this._fpsFrames * 1000) / (now - this._fpsAt);
@@ -241,6 +268,7 @@ class H264Player {
 
   close() {
     if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+    if (this._timer) { clearTimeout(this._timer); this._timer = 0; }
     for (const f of this._queue) { try { f.close(); } catch (e) {} }
     this._queue = [];
     try { if (this.decoder && this.decoder.state !== "closed") this.decoder.close(); } catch (e) {}
@@ -252,7 +280,7 @@ class H264Player {
 
   get stats() {
     return { fps: Math.round(this.fps * 10) / 10, frames: this.frames, dropped: this.dropped, late: this.lateDropped,
-             queued: this._queue.length,
+             queued: this._queue.length, early: this.forcedEarly,
              decodeQueue: this.decoder ? this.decoder.decodeQueueSize : 0 };
   }
 }

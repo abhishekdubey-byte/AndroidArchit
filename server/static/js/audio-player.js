@@ -13,7 +13,7 @@ class AacPlayer {
       && window.isSecureContext === true;
   }
 
-  constructor({ targetMs = 80, maxMs = 200 } = {}) {
+  constructor({ targetMs = 80, maxTargetMs = 200 } = {}) {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     this.ctx = new Ctx({ sampleRate: 48000, latencyHint: "interactive" });
     if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
@@ -27,10 +27,10 @@ class AacPlayer {
     this._report = null;                       // last {pts, time} from the worklet
     this._reportAt = 0;
     this.stats = { buffered: 0, underruns: 0, droppedMs: 0, decoded: 0 };
-    this.ready = this.ctx.audioWorklet.addModule("/js/audio-worklet.js?v=1.9.46").then(() => {
+    this.ready = this.ctx.audioWorklet.addModule("/js/audio-worklet.js?v=1.9.47").then(() => {
       if (this.closed) return;
       this.node = new AudioWorkletNode(this.ctx, "pcm-player", {
-        numberOfInputs: 0, outputChannelCount: [1], processorOptions: { targetMs, maxMs } });
+        numberOfInputs: 0, outputChannelCount: [1], processorOptions: { targetMs, maxTargetMs } });
       this.node.port.onmessage = (e) => {
         const m = e.data;
         if (m.type !== "clock") return;
@@ -39,6 +39,7 @@ class AacPlayer {
         this.stats.buffered = Math.round(m.buffered * 1000);
         this.stats.underruns = m.underruns;
         this.stats.droppedMs = Math.round(m.droppedMs);
+        this.stats.targetMs = Math.round(m.targetMs);
       };
       this.node.connect(this.gain);
       for (const p of this.pending) this.node.port.postMessage(p, [p.data.buffer]);
@@ -129,7 +130,7 @@ class LaptopMic {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     const ctx = new Ctx({ latencyHint: "interactive" });
     try {
-      await ctx.audioWorklet.addModule("/js/audio-worklet.js?v=1.9.46");
+      await ctx.audioWorklet.addModule("/js/audio-worklet.js?v=1.9.47");
       const src = ctx.createMediaStreamSource(stream);
       const node = new AudioWorkletNode(ctx, "mic-capture", { numberOfOutputs: 0 });
       node.port.onmessage = (e) => { if (e.data.type === "pcm") onBlock(e.data.pcm, e.data.level); };

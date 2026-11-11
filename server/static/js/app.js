@@ -619,7 +619,7 @@ class ControlCentreApp {
   // ----- Phone microphone (AAC): live camera sound and "Listen Live" share one player -----
   ensureAacPlayer() {
     if (this.aac || !window.AacPlayer || !AacPlayer.supported()) return this.aac;
-    try { this.aac = new AacPlayer({ targetMs: 80, maxMs: 200 }); } catch (e) { this.aac = null; }
+    try { this.aac = new AacPlayer({ targetMs: 80, maxTargetMs: 200 }); } catch (e) { this.aac = null; }
     return this.aac;
   }
 

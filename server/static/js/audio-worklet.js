@@ -1,8 +1,10 @@
 // AudioWorklet processors for the dashboard (run on the browser's audio thread).
 //
-// "pcm-player": plays the phone microphone (decoded AAC, mono Float32) through a small jitter buffer.
-//   - starts (and restarts after an underrun) once `targetMs` of audio is queued (80 ms);
-//   - if more than `maxMs` is queued (200 ms, e.g. after a network stall), the oldest audio is dropped back to the
+// "pcm-player": plays the phone microphone (decoded AAC, mono Float32) through a small adaptive jitter buffer.
+//   - starts (and restarts after an underrun) once the target is queued: 80 ms, +20 ms after each underrun (up to
+//     `maxTargetMs`, 200 ms), easing back 10 ms every 15 s without one - steady links stay at 80 ms, jittery ones
+//     stop clicking;
+//   - if more than target + 120 ms is queued (e.g. after a network stall), the oldest audio is dropped back to the
 //     target, so the listener hears the present instead of a growing delay;
 //   - short fades at underruns/restarts avoid clicks;
 //   - every ~50 ms it reports which phone timestamp is playing ({pts, time}) so video can be timed against it.
@@ -15,8 +17,12 @@ class PcmPlayer extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const o = (options && options.processorOptions) || {};
-    this.target = Math.round(sampleRate * (o.targetMs || 80) / 1000);
-    this.max = Math.round(sampleRate * (o.maxMs || 200) / 1000);
+    this.minTarget = Math.round(sampleRate * (o.targetMs || 80) / 1000);
+    this.maxTarget = Math.round(sampleRate * (o.maxTargetMs || 200) / 1000);
+    this.step = Math.round(sampleRate * 0.02);
+    this.slack = Math.round(sampleRate * 0.12);     // queued beyond target + slack is dropped
+    this.target = this.minTarget;
+    this.calmSince = 0;
     this.chunks = [];          // { data: Float32Array, pts: µs of data[0], off }
     this.buffered = 0;
     this.playing = false;
@@ -39,7 +45,7 @@ class PcmPlayer extends AudioWorkletProcessor {
   }
 
   trim() {
-    if (this.buffered <= this.max) return;
+    if (this.buffered <= this.target + this.slack) return;
     let drop = this.buffered - this.target;
     this.dropped += drop;
     while (drop > 0 && this.chunks.length) {
@@ -67,9 +73,11 @@ class PcmPlayer extends AudioWorkletProcessor {
         i += n; c.off += n; this.buffered -= n;
         if (c.off >= c.data.length) this.chunks.shift();
       }
-      if (i < out.length) {                       // ran dry: fade out what we have, wait for the target again
+      if (i < out.length) {                       // ran dry: fade out what we have, wait for a bigger target
         this.playing = false;
         this.underruns++;
+        this.target = Math.min(this.maxTarget, this.target + this.step);
+        this.calmSince = currentTime;
         const f = Math.min(FADE, i);
         for (let k = 0; k < f; k++) out[i - f + k] *= 1 - (k + 1) / f;
       }
@@ -81,10 +89,15 @@ class PcmPlayer extends AudioWorkletProcessor {
     }
     for (; i < out.length; i++) out[i] = 0;
     for (let ch = 1; ch < outs.length; ch++) outs[ch].set(out);
+    if (this.playing && currentTime - this.calmSince >= 15 && this.target > this.minTarget) {
+      this.target = Math.max(this.minTarget, this.target - this.step / 2);
+      this.calmSince = currentTime;
+    }
     if (headPts !== null && currentTime - this.lastReport >= 0.05) {
       this.lastReport = currentTime;
       this.port.postMessage({ type: "clock", pts: headPts, time: currentTime, buffered: this.buffered / sampleRate,
-                              underruns: this.underruns, droppedMs: (this.dropped * 1000) / sampleRate });
+                              underruns: this.underruns, droppedMs: (this.dropped * 1000) / sampleRate,
+                              targetMs: (this.target * 1000) / sampleRate });
     }
     return true;
   }

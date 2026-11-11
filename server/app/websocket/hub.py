@@ -64,6 +64,8 @@ class WebSocketHub:
         self.mirror_sessions: Dict[str, ScrcpySession] = {}  # device_id -> running fast USB mirror
         self._fast_mirror_failed: Dict[str, float] = {}      # device_id -> when fast mirroring last failed
         self._cam_codec: Dict[str, str] = {}                  # device_id -> "h264" / "jpeg" (live camera format)
+        self._cam_config: Dict[str, bytes] = {}               # device_id -> latest H.264 SPS/PPS from the phone
+        self._cam_rotation: Dict[str, int] = {}               # device_id -> camera sensor rotation (degrees cw)
         self.input_router = InputRouter(adb_bridge, device_manager, self.mirror_sessions)
         self.pb = None  # PowerBoosters gateway, attached in main.py
 
@@ -261,7 +263,17 @@ class WebSocketHub:
             elif device_id and device_id not in self.cam_recorders:
                 folder = device_capture_dir(dev or device_id)
                 if self._cam_codec.get(device_id) == "h264":   # copy the phone's H.264: stop = close the file
-                    self.cam_recorders[device_id] = H264Recorder(dev.name if dev else device_id, folder=folder)
+                    rec = H264Recorder(dev.name if dev else device_id, folder=folder,
+                                       rotation=self._cam_rotation.get(device_id, 0))
+                    self.cam_recorders[device_id] = rec
+                    if device_id in self._cam_config:          # the stream's config came before this recording
+                        rec.submit_video(1, 0, self._cam_config[device_id])
+                    sock = self._get_companion_socket(dev) if dev else None
+                    if sock:                                   # start at a key frame now, not up to 2 s later
+                        try:
+                            await sock.send_json({"type": "CAMERA_KEYFRAME"})
+                        except Exception:
+                            pass
                 else:
                     self.cam_recorders[device_id] = CamRecorder(dev.name if dev else device_id, folder=folder)
                 await self.broadcast_to_dashboards({"type": "CAMERA_SAVE_STATE", "device_id": device_id,
@@ -275,6 +287,11 @@ class WebSocketHub:
             _d = self._device_for_companion(device_id)
             did = _d.id if _d else device_id
             rec = self.cam_recorders.get(did)
+            if msg_type == "CAMERA_STREAM_STATE" and payload.get("codec") == "h264" and "rotation" in payload:
+                try:
+                    self._cam_rotation[did] = int(payload["rotation"])
+                except (TypeError, ValueError):
+                    pass
             if msg_type == "CAMERA_FRAME":
                 self._cam_codec[did] = "jpeg"
             if msg_type == "CAMERA_FRAME" and rec and payload.get("data_base64"):
@@ -849,6 +866,8 @@ class WebSocketHub:
         except (TypeError, ValueError):
             return True
         self._cam_codec[did] = "h264"
+        if kind == 1:
+            self._cam_config[did] = payload          # a recording started later needs it to begin
         await self.fanout.publish(f"{did}#cam", VideoPacket(pts, kind == 1, kind == 2, payload))
         rec = self.cam_recorders.get(did)
         if rec is not None and hasattr(rec, "submit_video"):

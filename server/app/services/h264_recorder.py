@@ -53,12 +53,13 @@ class H264Recorder:
     QUEUE_MAX = 1200          # ~40 s of 30 fps video at worst; oldest deltas are never dropped (would corrupt)
     DRAIN_TIMEOUT = 60.0
 
-    def __init__(self, device_name: str, folder: Optional[Path] = None):
+    def __init__(self, device_name: str, folder: Optional[Path] = None, rotation: int = 0):
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (device_name or "device"))[:40]
         self.path = Path(folder or DOWNLOADS_DIR) / f"live_{safe}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
         self.video_path = self.path.with_suffix(".video.mp4")
         self.audio_path = self.path.with_suffix(".pcm")
         self.frames = 0
+        self.rotation = int(rotation or 0) % 360   # camera sensors are mounted sideways
         self._config: Optional[bytes] = None
         self._proc: Optional[subprocess.Popen] = None
         self._audio = None
@@ -111,8 +112,9 @@ class H264Recorder:
         if self._proc is None:
             if kind != KIND_KEY or self._config is None or not FFMPEG:
                 return                              # a recording can only start at a key frame
+            rotate = ["-display_rotation", str(-self.rotation)] if self.rotation else []   # counter-clockwise degrees
             self._proc = subprocess.Popen(
-                [FFMPEG, "-y", "-loglevel", "error", "-use_wallclock_as_timestamps", "1", "-f", "h264", "-i", "pipe:0",
+                [FFMPEG, "-y", "-loglevel", "error", "-use_wallclock_as_timestamps", "1", *rotate, "-f", "h264", "-i", "pipe:0",
                  "-c:v", "copy", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", str(self.video_path)],
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.t0 = at

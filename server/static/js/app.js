@@ -547,6 +547,7 @@ class ControlCentreApp {
   onMediaPacket(buf) {
     let pkt;
     try { pkt = parseMediaPacket(buf); } catch (e) { return; }
+    if (this.activeDevice && pkt.deviceId === this.activeDevice.id + "#cam") return this.onCameraPacket(pkt);
     if (!this.activeDevice || pkt.deviceId !== this.activeDevice.id || !this.mirrorOn) return;
     if (!this.h264) {
       this.h264 = new H264Player(this.canvas, {
@@ -566,6 +567,42 @@ class ControlCentreApp {
     if (this.img) this.img.onload = null;   // a late JPEG must not paint over the live picture
     this.h264.push(pkt);
     if (this.debugMirror && this.coordBadge && pkt.kind !== 1) this.coordBadge.innerText = `H.264 ${this.h264.stats.fps} fps`;
+  }
+
+  // ----- Live camera as hardware H.264 (phone app 1.9.28+) -----
+  onCameraPacket(pkt) {
+    if (!this.live || !this.live.on) return;
+    const canvas = document.getElementById("liveCanvas");
+    if (!canvas) return;
+    if (!this.camPlayer) {
+      const stream = this.activeDevice.id + "#cam";
+      this.camPlayer = new H264Player(canvas, {
+        onFirstFrame: () => {
+          canvas.hidden = false;
+          const img = document.getElementById("liveImg"); if (img) img.hidden = true;
+        },
+        onStuck: () => this.ws && this.ws.readyState === WebSocket.OPEN &&
+          this.ws.send(JSON.stringify({ type: "MIRROR_RESYNC", device_id: stream })),
+        onUnsupported: () => {
+          this.showToast("This browser can't decode the live camera stream.", "error");
+          this.stopLivePreview("unsupported video");
+        },
+      });
+      this.camPlayer.setRotation(this.live.rotation || 0);
+    }
+    this.camPlayer.push(pkt);
+    const now = Date.now();
+    if (now - this.live.fpsAt >= 1000) {
+      const fps = document.getElementById("liveFps");
+      if (fps) fps.innerText = this.camPlayer.stats.fps + " fps · H.264";
+      this.live.fpsAt = now;
+    }
+  }
+
+  stopCameraPlayer() {
+    if (this.camPlayer) { this.camPlayer.close(); this.camPlayer = null; }
+    const canvas = document.getElementById("liveCanvas"); if (canvas) canvas.hidden = true;
+    const img = document.getElementById("liveImg"); if (img) img.hidden = false;
   }
 
   stopH264() {
@@ -719,6 +756,7 @@ class ControlCentreApp {
       this.ws.send(JSON.stringify({ type: "STOP_CAMERA_STREAM", device_id: this.activeDevice.id }));
     }
     this.live = { on: false };
+    this.stopCameraPlayer();
     const sb = document.getElementById("btnLiveSave");
     if (sb) { sb.classList.remove("rec"); sb.innerText = "⏺ Save"; }
     const btn = document.getElementById("btnLivePreview");
@@ -750,6 +788,14 @@ class ControlCentreApp {
 
   onLiveState(payload) {
     if (!payload) return;
+    if (payload.codec === "h264" && this.live && this.live.on) {
+      if (payload.rotation !== undefined) {
+        this.live.rotation = payload.rotation;
+        if (this.camPlayer) this.camPlayer.setRotation(payload.rotation);
+      }
+      if (payload.lens) this.setLiveBadge(payload.lens === "front" ? "front" : "rear");
+      if (payload.throttled) this.setCaptureStatus("ok", "Phone is warm: live camera eased to 15 fps");
+    }
     if (payload.error) {
       this.setCaptureStatus("err", "Live preview: " + payload.error);
       this.stopLivePreview("error: " + payload.error);

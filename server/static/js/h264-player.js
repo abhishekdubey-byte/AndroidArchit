@@ -63,6 +63,7 @@ class H264Player {
     this.needKey = true;
     this.frames = 0;
     this.dropped = 0;
+    this.rotation = 0;               // degrees clockwise to turn the picture upright (camera sensors are sideways)
     this._fpsFrames = 0;
     this._fpsAt = performance.now();
     this.fps = 0;
@@ -128,14 +129,28 @@ class H264Player {
     this.needKey = true;
   }
 
+  setRotation(degrees) {
+    this.rotation = ((Number(degrees) || 0) % 360 + 360) % 360;
+  }
+
   _draw(frame) {
     const w = frame.displayWidth, h = frame.displayHeight;
-    if (this.canvas.width !== w || this.canvas.height !== h) {   // first frame or rotation
-      this.canvas.width = w;
-      this.canvas.height = h;
+    const sideways = this.rotation === 90 || this.rotation === 270;
+    const cw = sideways ? h : w, ch = sideways ? w : h;
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {   // first frame, rotation or lens switch
+      this.canvas.width = cw;
+      this.canvas.height = ch;
     }
     try {
-      this.ctx.drawImage(frame, 0, 0, w, h);
+      if (this.rotation) {
+        this.ctx.save();
+        this.ctx.translate(cw / 2, ch / 2);
+        this.ctx.rotate((this.rotation * Math.PI) / 180);
+        this.ctx.drawImage(frame, -w / 2, -h / 2, w, h);
+        this.ctx.restore();
+      } else {
+        this.ctx.drawImage(frame, 0, 0, w, h);
+      }
     } finally {
       frame.close();                                 // a leaked frame stalls the decoder's small output pool
     }

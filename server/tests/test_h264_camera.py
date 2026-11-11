@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from app.services.h264_recorder import H264Recorder, split_access_units
 from app.services.media_packets import KIND_CONFIG, KIND_DELTA, KIND_KEY, unpack
+from app.websocket import hub as hub_module
 from app.websocket.hub import WebSocketHub, parse_device_binary
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -157,3 +158,41 @@ class TestH264Recorder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRecordingStartedMidStream(unittest.IsolatedAsyncioTestCase):
+    async def test_recorder_gets_cached_config_and_phone_sends_key_frame(self):
+        hub, phone = make_hub()
+        await hub.handle_device_binary(phone, device_frame({"type": "CAMERA_PKT", "k": 1, "pts": 0}, b"SPSPPS"))
+        await hub.handle_device_binary(phone, device_frame({"type": "CAMERA_PKT", "k": 2, "pts": 1}, b"K"))
+        ws = FakeWS()
+        hub.dashboard_clients.add(ws)
+        got = []
+
+        class Rec:
+            def __init__(self, *a, **k):
+                pass
+
+            def submit_video(self, kind, pts, data):
+                got.append((kind, data))
+        orig = hub_module.H264Recorder
+        hub_module.H264Recorder = Rec
+        try:
+            await hub._process_dashboard_message(ws, {"type": "START_CAMERA_SAVE", "device_id": "xiaomi"})
+        finally:
+            hub_module.H264Recorder = orig
+        self.assertEqual(got[0], (1, b"SPSPPS"))          # the recording can start at the next key frame
+        self.assertIn("CAMERA_KEYFRAME", [m["type"] for m in phone.json])
+
+
+@unittest.skipUnless(FFMPEG, "ffmpeg not installed")
+class TestRecordingRotation(unittest.TestCase):
+    def test_rotation_written_as_display_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = H264Recorder("Phone", folder=Path(d), rotation=90)   # back camera sensor mounted at 90°
+            for kind, data in split_access_units((FIXTURES / "cam_720p_10s.h264").read_bytes()):
+                rec.submit_video(kind, 0, data)
+            path = rec.close()
+            out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                  "stream_side_data=rotation", "-of", "csv=p=0", path], capture_output=True, text=True).stdout
+            self.assertIn("-90", out)        # players turn it 90° clockwise: upright portrait

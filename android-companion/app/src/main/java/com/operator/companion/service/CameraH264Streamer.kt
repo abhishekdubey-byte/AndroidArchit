@@ -104,8 +104,13 @@ class CameraH264Streamer(
         running = false
         val h = handler
         val t = thread
-        if (h != null) h.post { closeCamera() } else closeCamera()
-        t?.quitSafely()
+        if (h != null) {
+            h.post { closeCamera() }
+            // camera2 delivers its close callbacks on this thread: end it only after they have run
+            h.postDelayed({ t?.quitSafely() }, 500)
+        } else {
+            closeCamera()
+        }
         thread = null; handler = null
     }
 

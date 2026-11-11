@@ -18,6 +18,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -60,6 +61,8 @@ class CameraH264Streamer(
 
     private val bitrate = BitrateController()
     @Volatile private var skippingDeltas = false
+    @Volatile private var waitKey = false          // after a skip: resume only at a key frame
+    @Volatile private var generation = 0          // bumps on every close: callbacks of an older camera are ignored
     private var throttled = false
     private var coolSinceMs = 0L
     private var lastTickMs = 0L
@@ -130,6 +133,7 @@ class CameraH264Streamer(
     @SuppressLint("MissingPermission")
     private fun openCamera() {
         if (!running) return
+        val myGen = ++generation
         val front = lens == "front"
         val id = chooseCameraId(if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK)
             ?: run { onError("No $lens camera on this device"); return }
@@ -162,6 +166,7 @@ class CameraH264Streamer(
             codec = enc
             inputSurface = surface
             skippingDeltas = false
+            waitKey = false
             drainThread = Thread({ drain(enc) }, "CameraH264Drain").apply { start() }
 
             onState(JSONObject().put("codec", "h264").put("width", size.width).put("height", size.height)
@@ -170,30 +175,41 @@ class CameraH264Streamer(
 
             cameraManager.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
-                    if (!running) { camera.close(); return }
+                    // a lens flip may have closed this attempt already: never attach a stale camera
+                    if (!running || myGen != generation) { camera.close(); return }
                     cameraDevice = camera
+                    try {
                     @Suppress("DEPRECATION")
                     camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
                         override fun onConfigured(s: CameraCaptureSession) {
-                            if (!running) { s.close(); return }
+                            if (!running || myGen != generation) { s.close(); return }
                             session = s
                             try {
                                 val b = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                                     addTarget(surface)
                                     set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                                    normalFps?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+                                    (if (throttled) slowFps else normalFps)?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
                                 }
                                 requestBuilder = b
                                 s.setRepeatingRequest(b.build(), null, handler)
                             } catch (e: Exception) { onError("Camera request failed: ${e.message}") }
                         }
-                        override fun onConfigureFailed(s: CameraCaptureSession) { onError("Camera session failed to configure") }
+                        override fun onConfigureFailed(s: CameraCaptureSession) {
+                            if (myGen == generation) onError("Camera session failed to configure")
+                        }
                     }, handler)
+                    } catch (e: Exception) {
+                        if (myGen == generation) onError("Camera session failed: ${e.message}")
+                    }
                 }
-                override fun onDisconnected(camera: CameraDevice) { camera.close() }
+                override fun onDisconnected(camera: CameraDevice) {
+                    camera.close()
+                    if (myGen == generation) onError("Another app took the camera")
+                }
                 override fun onError(camera: CameraDevice, error: Int) {
                     camera.close()
+                    if (myGen != generation) return
                     onError(when (error) {
                         ERROR_CAMERA_IN_USE -> "Camera is in use by another app"
                         ERROR_MAX_CAMERAS_IN_USE -> "Too many cameras in use"
@@ -209,6 +225,7 @@ class CameraH264Streamer(
     }
 
     private fun closeCamera() {
+        generation++
         try { session?.stopRepeating() } catch (_: Exception) {}
         try { session?.close() } catch (_: Exception) {}
         try { cameraDevice?.close() } catch (_: Exception) {}
@@ -225,7 +242,7 @@ class CameraH264Streamer(
     private fun drain(enc: MediaCodec) {
         val info = MediaCodec.BufferInfo()
         while (running && codec === enc) {
-            val idx = try { enc.dequeueOutputBuffer(info, 10_000) } catch (e: Exception) { break }
+            val idx = try { enc.dequeueOutputBuffer(info, 50_000) } catch (e: Exception) { break }
             if (idx >= 0) {
                 try {
                     val buf = enc.getOutputBuffer(idx)
@@ -239,8 +256,16 @@ class CameraH264Streamer(
                             info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0 -> 2
                             else -> 3
                         }
-                        if (kind == 2) skippingDeltas = false
-                        if (!(kind == 3 && skippingDeltas)) onPacket(kind, info.presentationTimeUs, data)
+                        val send = when {
+                            kind == 1 -> true                         // config is tiny and always needed
+                            skippingDeltas -> false                   // congested: let the uplink drain
+                            waitKey && kind == 3 -> false             // resume only at a key frame
+                            else -> true
+                        }
+                        if (send) {
+                            if (kind == 2) waitKey = false
+                            onPacket(kind, info.presentationTimeUs, data)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "packet failed: ${e.message}")
@@ -253,13 +278,17 @@ class CameraH264Streamer(
     }
 
     private fun tick(enc: MediaCodec) {
-        val now = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()       // monotonic: a wall-clock change can't stall the ticks
         if (now - lastTickMs < 1000) return
         lastTickMs = now
         val q = queueBytes()
         bitrate.onQueue(q, now)?.let { setBitrate(enc, it) }
-        if (bitrate.shouldSkipDeltas(q) && !skippingDeltas) {   // badly congested: send only from the next key frame
-            skippingDeltas = true
+        val skip = bitrate.updateSkip(q)
+        if (skip && !skippingDeltas) {
+            skippingDeltas = true                     // over 1 s queued: stop sending until it drains
+        } else if (!skip && skippingDeltas) {
+            skippingDeltas = false
+            waitKey = true                            // drained: one key frame, then normal deltas
             requestKeyFrame()
         }
         if (now - lastThermalMs >= 10_000) {

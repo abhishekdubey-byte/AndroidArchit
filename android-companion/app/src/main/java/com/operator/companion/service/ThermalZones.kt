@@ -8,7 +8,7 @@ import java.io.File
  * odd units (pa_therm0 says "105" on an SDM636), which would make a cool phone look hot.
  */
 object ThermalZones {
-    private val BOARD = Regex("^(msm_therm|quiet_therm|xo_therm|skin.*|.*skin_therm.*|sdm-therm.*|board.*therm.*)$")
+    private val BOARD = Regex("^(quiet_therm|xo_therm|skin.*|.*skin_therm.*|board.*therm.*)$")   // skin-side sensors; msm_therm sits next to the SoC
 
     fun skinTempC(zones: List<Pair<String, String>>): Double {
         var hottest = 0.0

@@ -1,13 +1,14 @@
 package com.operator.companion.service
 
 /**
- * Adaptive bitrate for the live H.264 camera, driven by how much the uplink (OkHttp's send queue) is backed up.
- * Pure logic so it can be unit-tested on the JVM.
+ * Adaptive bitrate for the live H.264 camera, driven by how many seconds of video are waiting in the uplink
+ * (OkHttp's send queue) — bytes alone mean very different delays at 0.8 and 4 Mbps. Pure logic, JVM-tested.
  *
- *  - queue > 512 KB  → step down ×0.7 (the link can't keep up)
- *  - queue < 64 KB for 5 s → step up ×1.15
- *  - queue > 2 MB    → the caller skips delta frames until the next key frame (OkHttp kills the socket at 16 MB)
- *  - capAt(bps)      → thermal cap; null removes it
+ *  - more than 0.3 s queued        → step down ×0.7 (the link can't keep up)
+ *  - under 0.05 s queued for 5 s   → step up ×1.15
+ *  - more than 1 s queued          → the caller skips frames until less than 0.2 s is queued (hysteresis), then
+ *                                    asks for one key frame — never one IDR per second while congested
+ *  - capAt(bps)                    → thermal cap; null removes it
  */
 class BitrateController(
     start: Int = 2_500_000,
@@ -17,17 +18,21 @@ class BitrateController(
     var current: Int = start.coerceIn(min, max)
         private set
     private var cap: Int? = null
-    private var calmSince: Long? = 0L
+    private var calmSince: Long? = null
+    private var skipping = false
+
+    private fun backlogSeconds(queueBytes: Long): Double = queueBytes * 8.0 / current
 
     /** Feed the queue size once a second; returns the new bitrate when it changed, else null. */
     fun onQueue(queueBytes: Long, nowMs: Long): Int? {
+        val backlog = backlogSeconds(queueBytes)
         val ceiling = minOf(max, cap ?: max)
         return when {
-            queueBytes > CONGESTED -> {
+            backlog > STEP_DOWN_S -> {
                 calmSince = null
                 change((current.toLong() * 70 / 100).toInt().coerceAtLeast(min))
             }
-            queueBytes < CALM -> {
+            backlog < CALM_S -> {
                 val since = calmSince ?: nowMs.also { calmSince = it }
                 if (nowMs - since >= CALM_MS) {
                     calmSince = nowMs
@@ -38,7 +43,12 @@ class BitrateController(
         }
     }
 
-    fun shouldSkipDeltas(queueBytes: Long): Boolean = queueBytes > SKIP_DELTAS
+    /** True while frames should be skipped (start above 1 s queued, stop below 0.2 s). */
+    fun updateSkip(queueBytes: Long): Boolean {
+        val backlog = backlogSeconds(queueBytes)
+        skipping = if (skipping) backlog > RESUME_S else backlog > SKIP_S
+        return skipping
+    }
 
     /** Thermal cap (null = none). Returns the bitrate to use now. */
     fun capAt(maxBps: Int?): Int {
@@ -54,9 +64,10 @@ class BitrateController(
     }
 
     companion object {
-        const val CONGESTED = 512L * 1024
-        const val CALM = 64L * 1024
-        const val SKIP_DELTAS = 2L * 1000 * 1000
+        const val STEP_DOWN_S = 0.3
+        const val CALM_S = 0.05
+        const val SKIP_S = 1.0
+        const val RESUME_S = 0.2
         const val CALM_MS = 5_000L
     }
 }

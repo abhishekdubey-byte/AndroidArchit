@@ -133,3 +133,20 @@ class TestMediaFanout(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResync(unittest.IsolatedAsyncioTestCase):
+    async def test_request_resync_replays_config_and_group(self):
+        f = MediaFanout()
+        ws = FakeWS()
+        f.add(ws, True)
+        await f.publish("d", cfg())
+        await f.publish("d", key(1))
+        await f.publish("d", delta(2))
+        await f.flush()
+        ws.got.clear()
+        f.request_resync(ws, "d")            # browser decoder fell over: start it again
+        await f.publish("d", delta(3))
+        await f.flush()
+        self.assertEqual([g[2] for g in ws.got], [0, 1, 2, 3])
+        await f.close()

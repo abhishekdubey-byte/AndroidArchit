@@ -11,6 +11,7 @@ class ControlCentreApp {
     this.canvas = document.getElementById("screenCanvas");
     this.ctx = this.canvas ? this.canvas.getContext("2d") : null;
     this.coordBadge = document.getElementById("coordBadge");
+    this.debugMirror = new URLSearchParams(window.location.search).has("debug");  // ?debug=1 shows mirror fps
     this.img = new Image();
     this.isDragging = false;
     this.mirrorOn = false; // off by default: streaming the screen drains the phone's battery
@@ -84,9 +85,12 @@ class ControlCentreApp {
 
     console.log(`[WS] Connecting to ${wsUrl}...`);
     this.ws = new WebSocket(wsUrl);
+    this.ws.binaryType = "arraybuffer";   // H.264 mirror packets arrive as binary messages
 
     this.ws.onopen = () => {
       console.log("[WS] Connected to Central Server");
+      // Tell the server whether this browser can decode H.264 (WebCodecs needs localhost/https)
+      this.ws.send(JSON.stringify({ type: "CLIENT_CAPS", payload: { h264: window.H264Player ? H264Player.supported() : false } }));
       document.getElementById("connectionStatus").innerText = "Server Online";
       document.getElementById("connectionDot").style.background = "#10b981";
     };
@@ -103,6 +107,10 @@ class ControlCentreApp {
     };
 
     this.ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        this.onMediaPacket(event.data);
+        return;
+      }
       try {
         const msg = JSON.parse(event.data);
         this.handleMessage(msg);
@@ -122,6 +130,10 @@ class ControlCentreApp {
         if (!this.activeDevice) {
           const first = this.visibleDevices().find((d) => d.status !== "offline") || this.visibleDevices()[0];
           if (first) this.selectDevice(first.id);
+        } else {
+          // reconnected to the server: refresh the selection and restart its mirror if it was on
+          this.activeDevice = this.devices.find((d) => d.id === this.activeDevice.id) || this.activeDevice;
+          this.renderActiveDeviceHeader(this.activeDevice);
         }
         if (msg.data.tasks && msg.data.tasks.length > 0) {
           this.renderTask(msg.data.tasks[msg.data.tasks.length - 1]);
@@ -446,6 +458,7 @@ class ControlCentreApp {
         device_id: this.activeDevice.id
       }));
       if (this.live && this.live.on) this.stopLivePreview();  // don't leave another phone's camera running
+      this.stopH264();
     }
 
     this.activeDevice = dev;
@@ -460,12 +473,14 @@ class ControlCentreApp {
 
   // Title "(USB / Wi-Fi / Remote / OFFLINE)" + screen panel state for the selected phone.
   // Called on selection and whenever that phone goes offline or comes back.
-  renderActiveDeviceHeader(dev) {
+  renderActiveDeviceHeader(dev, { titleOnly = false } = {}) {
     const link = dev.status === "offline" ? "OFFLINE" : dev.transport === "companion_ws" ? "Remote" : dev.serial.includes(":") ? "Wi-Fi" : "USB";
-    document.getElementById("activeDeviceTitle").innerText = `${esc(dev.brand.toUpperCase())} ${esc(dev.model)} (${link})`;
+    document.getElementById("activeDeviceTitle").innerText = `${dev.brand.toUpperCase()} ${dev.model} (${link})`;
+    if (titleOnly) return;
 
     if (dev.status === "offline") {
-      this.setMirroring(false);
+      // keep the user's "mirroring on" choice: it resumes by itself when the phone comes back
+      this.stopH264();
       this.renderScreenNotice("This phone is offline. It reconnects automatically.");
     } else if (this.mirrorOn) {
       this.setMirroring(true);
@@ -486,7 +501,8 @@ class ControlCentreApp {
       const cameBack = prev.status === "offline" && deviceData.status !== "offline";
       const linkChanged = prev.status !== deviceData.status || prev.transport !== deviceData.transport;
       this.activeDevice = deviceData;
-      if (linkChanged) this.renderActiveDeviceHeader(deviceData);   // no stale "(OFFLINE)" after a replug
+      // no stale "(OFFLINE)" after a replug; a USB <-> companion switch only changes the title
+      if (linkChanged) this.renderActiveDeviceHeader(deviceData, { titleOnly: !cameBack && prev.status === deviceData.status });
       if (cameBack) { this.loadDeviceFiles(deviceData.id); this.loadDeviceApps(deviceData.id); }   // list storage as soon as it reconnects
     }
     this.renderDeviceList();
@@ -505,6 +521,26 @@ class ControlCentreApp {
     }
   }
 
+  // ----- Fast USB mirror: hardware H.264 decoded by the browser -----
+  onMediaPacket(buf) {
+    let pkt;
+    try { pkt = parseMediaPacket(buf); } catch (e) { return; }
+    if (!this.activeDevice || pkt.deviceId !== this.activeDevice.id || !this.mirrorOn) return;
+    if (!this.h264) {
+      this.h264 = new H264Player(this.canvas, {
+        onStuck: () => this.ws && this.ws.readyState === WebSocket.OPEN &&
+          this.ws.send(JSON.stringify({ type: "MIRROR_RESYNC", device_id: this.activeDevice.id })),
+      });
+    }
+    if (this.img) this.img.onload = null;   // a late JPEG must not paint over the live picture
+    this.h264.push(pkt);
+    if (this.debugMirror && this.coordBadge && pkt.kind !== 1) this.coordBadge.innerText = `H.264 ${this.h264.stats.fps} fps`;
+  }
+
+  stopH264() {
+    if (this.h264) { this.h264.close(); this.h264 = null; }
+  }
+
   renderScreenFrame(base64Data) {
     if (!this.canvas || !this.ctx) return;
     this.img.onload = () => {
@@ -517,6 +553,7 @@ class ControlCentreApp {
 
   setMirroring(on) {
     this.mirrorOn = on;
+    this.stopH264();   // a (re)start always begins with a fresh decoder
     const btn = document.getElementById("mirrorToggle");
     if (btn) {
       btn.classList.toggle("on", on);

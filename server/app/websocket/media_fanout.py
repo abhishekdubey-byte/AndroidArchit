@@ -50,6 +50,16 @@ class MediaFanout:
     def jpeg_viewers(self, device_id: str) -> int:
         return sum(1 for c in self._clients.values() if not c.h264)
 
+    def request_resync(self, ws, device_id: str) -> None:
+        """The browser's decoder failed or fell far behind: restart it from config + current group."""
+        c = self._clients.get(ws)
+        if c is None:
+            return
+        while not c.q.empty():
+            c.q.get_nowait()
+            c.q.task_done()
+        c.synced.discard(device_id)
+
     def forget_device(self, device_id: str) -> None:
         """Stream ended: the next session starts with a new config."""
         self._config.pop(device_id, None)

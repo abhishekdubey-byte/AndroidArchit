@@ -254,6 +254,10 @@ class WebSocketHub:
             if session:
                 await session.stop()  # a static screen sends no packets: end the read loop now
 
+        elif msg_type == "MIRROR_RESYNC":
+            if device_id and websocket in self.dashboard_clients:
+                self.fanout.request_resync(websocket, device_id)
+
         elif msg_type == "CLIENT_CAPS":
             # The browser says whether it can decode H.264 (WebCodecs in a secure context)
             if websocket in self.dashboard_clients:

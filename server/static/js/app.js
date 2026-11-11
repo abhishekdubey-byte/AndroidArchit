@@ -22,10 +22,14 @@ class ControlCentreApp {
             this.stopH264();
             this.pausedHidden = true;
           }
+          if (this.aac && !this.listening) this.aac.suspend();   // no sound from a tab nobody looks at
         }, 8000);
-      } else if (this.pausedHidden) {
-        this.pausedHidden = false;
-        if (this.mirrorOn) this.setMirroring(true);
+      } else {
+        if (this.aac) this.aac.resume();
+        if (this.pausedHidden) {
+          this.pausedHidden = false;
+          if (this.mirrorOn) this.setMirroring(true);
+        }
       }
     });
     this.img = new Image();
@@ -221,7 +225,7 @@ class ControlCentreApp {
 
       case "CAMERA_AUDIO":
         if (this.activeDevice && msg.device_id === this.activeDevice.id && this.live && this.live.on
-            && !this.liveMuted && msg.payload && msg.payload.pcm_base64) {
+            && !this.liveMuted && !(this.aac && this.aac.clock() !== null) && msg.payload && msg.payload.pcm_base64) {
           this.playIncomingAudioChunk(msg.payload.pcm_base64);
         }
         break;
@@ -230,6 +234,10 @@ class ControlCentreApp {
         if (this.activeDevice && msg.device_id === this.activeDevice.id) {
           this.onLiveState(msg.payload);
         }
+        break;
+
+      case "PHONE_AUDIO_STATE":
+        if (this.activeDevice && msg.device_id === this.activeDevice.id) this.onListenState(msg.payload || {});
         break;
 
       case "CAMERA_SAVE_STATE":
@@ -304,6 +312,7 @@ class ControlCentreApp {
     if (this.activeDevice && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: "STOP_SCREEN_STREAM", device_id: this.activeDevice.id }));
       if (this.live && this.live.on) this.stopLivePreview();
+      if (this.listening) this.stopListenLive();
     }
     this.activeDevice = null;
     const t = document.getElementById("activeDeviceTitle"); if (t) t.innerText = "No phone selected";
@@ -480,6 +489,7 @@ class ControlCentreApp {
         device_id: this.activeDevice.id
       }));
       if (this.live && this.live.on) this.stopLivePreview();  // don't leave another phone's camera running
+      if (this.listening && dev && dev.id !== this.activeDevice.id) this.stopListenLive();
       this.stopH264();
     }
 
@@ -548,6 +558,10 @@ class ControlCentreApp {
     let pkt;
     try { pkt = parseMediaPacket(buf); } catch (e) { return; }
     if (this.activeDevice && pkt.deviceId === this.activeDevice.id + "#cam") return this.onCameraPacket(pkt);
+    if (this.activeDevice && pkt.deviceId === this.activeDevice.id + "#mic") {
+      if (this.aac) this.aac.push(pkt);                 // AAC from the phone (live camera sound / Listen Live)
+      return;
+    }
     if (!this.activeDevice || pkt.deviceId !== this.activeDevice.id || !this.mirrorOn) return;
     if (!this.h264) {
       this.h264 = new H264Player(this.canvas, {
@@ -587,6 +601,7 @@ class ControlCentreApp {
           this.showToast("This browser can't decode the live camera stream.", "error");
           this.stopLivePreview("unsupported video");
         },
+        clock: () => (this.aac ? this.aac.clock() : null),   // lip sync: frames shown when their sound is heard
       });
       this.camPlayer.setRotation(this.live.rotation || 0);
     }
@@ -594,9 +609,60 @@ class ControlCentreApp {
     const now = Date.now();
     if (now - this.live.fpsAt >= 1000) {
       const fps = document.getElementById("liveFps");
-      if (fps) fps.innerText = this.camPlayer.stats.fps + " fps · H.264";
+      const st = this.camPlayer.stats;
+      const a = this.aac && this.aac.clock() !== null ? ` · 🔊 ${this.aac.stats.buffered} ms` : "";
+      if (fps) fps.innerText = st.fps + " fps · H.264" + a;
       this.live.fpsAt = now;
     }
+  }
+
+  // ----- Phone microphone (AAC): live camera sound and "Listen Live" share one player -----
+  ensureAacPlayer() {
+    if (this.aac || !window.AacPlayer || !AacPlayer.supported()) return this.aac;
+    try { this.aac = new AacPlayer({ targetMs: 80, maxMs: 200 }); } catch (e) { this.aac = null; }
+    return this.aac;
+  }
+
+  startListenLive() {
+    if (!this.activeDevice || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ensureAacPlayer()) return;
+    this.aac.setMuted(false);
+    this.aac.resume();
+    this.listening = true;
+    this.renderListenUi("Connecting to the phone microphone…");
+    this.ws.send(JSON.stringify({ type: "START_PHONE_AUDIO", device_id: this.activeDevice.id, payload: {} }));
+  }
+
+  stopListenLive(reason) {
+    const was = this.listening;
+    this.listening = false;
+    if (was && this.activeDevice && this.ws && this.ws.readyState === WebSocket.OPEN)
+      this.ws.send(JSON.stringify({ type: "STOP_PHONE_AUDIO", device_id: this.activeDevice.id, payload: {} }));
+    if (this.aac) {
+      if (this.live && this.live.on) this.aac.setMuted(!!this.liveMuted);
+      else { this.aac.close(); this.aac = null; }
+    }
+    this.renderListenUi(reason || "Hear the phone's microphone live");
+  }
+
+  onListenState(p) {
+    if (p.error) {
+      this.showToast("Listen Live: " + p.error, "error");
+      if (this.listening) this.stopListenLive(p.error);
+    } else if (p.active && this.listening) {
+      this.renderListenUi("Listening live to the phone microphone");
+    } else if (p.active === false && this.listening) {
+      this.stopListenLive("The phone stopped the microphone");
+    }
+  }
+
+  renderListenUi(text) {
+    const btn = document.getElementById("toggleAudioBtn");
+    const waves = document.getElementById("audioWaves");
+    const status = document.getElementById("audioStatusText");
+    if (btn) btn.innerText = this.listening ? "⏹ Stop Listening" : "🔊 Listen Live";
+    if (waves) waves.classList.toggle("active", !!this.listening);
+    if (status && text) status.innerText = text;
   }
 
   stopCameraPlayer() {
@@ -653,6 +719,8 @@ class ControlCentreApp {
   startLivePreview(lens) {
     if (!this.activeDevice || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.live = { on: true, lens, frames: 0, fpsAt: Date.now() };
+    this.ensureAacPlayer();   // inside the click: the browser lets audio start
+    if (this.aac) this.aac.setMuted(!!this.liveMuted && !this.listening);
     try {  // created inside the click so the browser lets the phone mic audio play
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!this.speakerAudioCtx) this.speakerAudioCtx = new AudioCtx({ sampleRate: 16000 });
@@ -757,6 +825,7 @@ class ControlCentreApp {
     }
     this.live = { on: false };
     this.stopCameraPlayer();
+    if (this.aac && !this.listening) { this.aac.close(); this.aac = null; }
     const sb = document.getElementById("btnLiveSave");
     if (sb) { sb.classList.remove("rec"); sb.innerText = "⏺ Save"; }
     const btn = document.getElementById("btnLivePreview");
@@ -1139,14 +1208,18 @@ class ControlCentreApp {
     const audioStatusText = document.getElementById("audioStatusText");
 
     if (audioBtn) {
-      // Live phone audio is not implemented yet (upgrade roadmap, Phase 4): never pretend to be listening.
-      audioBtn.disabled = true;
-      audioBtn.title = "Coming soon: live phone audio";
-      audioBtn.innerText = "🔊 Listen Live (soon)";
-      audioBtn.style.opacity = "0.5";
-      audioBtn.style.cursor = "not-allowed";
-      if (audioWaves) audioWaves.classList.remove("active");
-      if (audioStatusText) audioStatusText.innerText = "Live phone audio is coming soon";
+      if (!window.AacPlayer || !AacPlayer.supported()) {
+        // WebCodecs audio needs a secure page: say so instead of pretending to listen
+        audioBtn.disabled = true;
+        audioBtn.style.opacity = "0.5";
+        audioBtn.style.cursor = "not-allowed";
+        audioBtn.title = "Open the dashboard on localhost or https to listen live";
+        if (audioStatusText) audioStatusText.innerText = "Listening needs the dashboard on localhost or https";
+      } else {
+        audioBtn.title = "Hear the phone's microphone live (stock Android does not let apps record the other side of a call)";
+        if (audioStatusText) audioStatusText.innerText = "Hear the phone's microphone live";
+        audioBtn.onclick = () => (this.listening ? this.stopListenLive() : this.startListenLive());
+      }
     }
 
     // Screen mirroring switch (off by default to save the phone's battery)
@@ -1190,6 +1263,7 @@ class ControlCentreApp {
       btnLiveMute.onclick = () => {
         this.liveMuted = !this.liveMuted;
         btnLiveMute.innerText = this.liveMuted ? "🔇 Muted" : "🔊 Sound";
+        if (this.aac) this.aac.setMuted(this.liveMuted && !this.listening);
         if (!this.liveMuted && this.speakerAudioCtx && this.speakerAudioCtx.state === "suspended") this.speakerAudioCtx.resume();
       };
     }
@@ -1558,92 +1632,28 @@ class ControlCentreApp {
   }
 
   async startLaptopMicStreaming() {
+    if (this.laptopMic) return;
     try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      this.laptopAudioCtx = new AudioCtx({ sampleRate: 16000 });
-      if (this.laptopAudioCtx.state === "suspended") {
-        await this.laptopAudioCtx.resume();
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 16000
-        }
-      });
-      this.laptopMicStream = stream;
-
-      const source = this.laptopAudioCtx.createMediaStreamSource(stream);
-      // ScriptProcessor captures raw PCM audio
-      const processor = this.laptopAudioCtx.createScriptProcessor(2048, 1, 1);
-
-      processor.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
-
-        // Volume meter RMS
-        let sum = 0;
-        for (let i = 0; i < input.length; i++) {
-          sum += input[i] * input[i];
-        }
-        const rms = Math.sqrt(sum / input.length);
+      this.laptopMic = await LaptopMic.start((pcm16, level) => {
         const meter = document.getElementById("laptopMicMeter");
-        if (meter) {
-          const pct = Math.min(100, Math.max(8, Math.round(rms * 500)));
-          meter.style.width = `${pct}%`;
-        }
-
-        if (this.isMicMuted) return;
-
-        // Downsample/convert Float32 to 16-bit PCM Int16
-        const pcm16 = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-          const s = Math.max(-1, Math.min(1, input[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-
-        // Convert Int16Array to Base64
-        let binary = "";
+        if (meter) meter.style.width = `${Math.min(100, Math.max(8, Math.round(level * 500)))}%`;
+        if (this.isMicMuted || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         const bytes = new Uint8Array(pcm16.buffer);
-        const len = bytes.byteLength;
-        for (let i = 0; i < len; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const b64 = btoa(binary);
-
+        let binary = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
         const targetDev = this.currentCall?.deviceId || (this.activeDevice ? this.activeDevice.id : null);
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({
-            type: "LAPTOP_MIC_AUDIO",
-            device_id: targetDev,
-            payload: { pcm_base64: b64 }
-          }));
-        }
-      };
-
-      source.connect(processor);
-      processor.connect(this.laptopAudioCtx.destination);
-      this.micProcessor = processor;
-      console.log("[Audio] Laptop microphone capture active (16kHz PCM streaming to phone)");
+        this.ws.send(JSON.stringify({ type: "LAPTOP_MIC_AUDIO", device_id: targetDev, payload: { pcm_base64: btoa(binary) } }));
+      });
+      console.log("[Audio] Laptop microphone live (AudioWorklet, 16 kHz PCM to the phone)");
     } catch (err) {
-      console.warn("[Audio] Microphone access requested or unavailable:", err);
+      this.laptopMic = null;
+      console.warn("[Audio] Microphone unavailable:", err);
+      this.showToast("Laptop microphone unavailable: " + (err && err.message ? err.message : err), "error");
     }
   }
 
   stopLaptopMicStreaming() {
-    if (this.laptopMicStream) {
-      this.laptopMicStream.getTracks().forEach(t => t.stop());
-      this.laptopMicStream = null;
-    }
-    if (this.micProcessor) {
-      this.micProcessor.disconnect();
-      this.micProcessor = null;
-    }
-    if (this.laptopAudioCtx && this.laptopAudioCtx.state !== "closed") {
-      this.laptopAudioCtx.close().catch(() => {});
-      this.laptopAudioCtx = null;
-    }
+    if (this.laptopMic) { this.laptopMic.stop(); this.laptopMic = null; }
   }
 
   playIncomingAudioChunk(base64Pcm) {

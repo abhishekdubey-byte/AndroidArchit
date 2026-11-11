@@ -49,8 +49,14 @@ class H264Player {
     return H264Player._probe;
   }
 
-  constructor(canvas, { onFirstFrame, onStuck, onUnsupported } = {}) {
+  // `clock` (optional): () => phone timestamp (µs) being heard now, or null. With it, each decoded frame is shown
+  // when its sound is heard (lip sync): up to 20 ms early, dropped if more than 100 ms late.
+  constructor(canvas, { onFirstFrame, onStuck, onUnsupported, clock } = {}) {
     this.canvas = canvas;
+    this.clock = clock || null;
+    this._queue = [];                // decoded frames waiting for their moment (clock mode)
+    this._raf = 0;
+    this.lateDropped = 0;
     this.ctx = canvas.getContext("2d");
     this.onFirstFrame = onFirstFrame;
     this.onStuck = onStuck;          // decoder far behind / errored: ask the server to resync this viewer
@@ -114,7 +120,7 @@ class H264Player {
     this.config = cfg.slice();                      // copy: the payload is a view into the WebSocket buffer
     if (!this.decoder || this.decoder.state === "closed") {
       this.decoder = new VideoDecoder({
-        output: (frame) => this._draw(frame),
+        output: (frame) => this._output(frame),
         error: (e) => { console.warn("[Mirror] decoder error:", e); this._failed(); },
       });
     }
@@ -127,6 +133,50 @@ class H264Player {
     }
 
     this.needKey = true;
+  }
+
+  _output(frame) {
+    const now = this.clock && !document.hidden ? this.clock() : null;
+    // no sound playing (or a hidden tab, where animation frames stop): show at once, as before
+    if (now === null || Math.abs(frame.timestamp - now) > 1500000) {
+      this._flushQueue(false);
+      return this._draw(frame);
+    }
+    this._queue.push(frame);
+    // hold at most a few frames: the decoder's output pool is small and must never run dry
+    while (this._queue.length > 5) this._draw(this._queue.shift());
+    if (!this._raf) this._raf = requestAnimationFrame(() => this._present());
+  }
+
+  _present() {
+    this._raf = 0;
+    if (!this._queue.length) return;
+    const now = this.clock ? this.clock() : null;
+    if (now === null || document.hidden) { this._flushQueue(); return; }
+    let due = -1;
+    for (let i = 0; i < this._queue.length; i++) if (this._queue[i].timestamp <= now + 20000) due = i;
+    if (due >= 0) {
+      for (let i = 0; i < due; i++) {                // older than the one due now: never shown
+        const f = this._queue[i];
+        if (now - f.timestamp > 100000) this.lateDropped++;
+        f.close();
+      }
+      const f = this._queue[due];
+      this._queue = this._queue.slice(due + 1);
+      this._draw(f);
+    }
+    if (this._queue.length) this._raf = requestAnimationFrame(() => this._present());
+  }
+
+  // Stop waiting for the clock: show the newest queued frame (or none) and release the rest.
+  _flushQueue(showNewest = true) {
+    const q = this._queue;
+    this._queue = [];
+    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+    if (!q.length) return;
+    const last = showNewest ? q.pop() : null;
+    for (const f of q) f.close();
+    if (last) this._draw(last);
   }
 
   setRotation(degrees) {
@@ -190,6 +240,9 @@ class H264Player {
   }
 
   close() {
+    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+    for (const f of this._queue) { try { f.close(); } catch (e) {} }
+    this._queue = [];
     try { if (this.decoder && this.decoder.state !== "closed") this.decoder.close(); } catch (e) {}
     this.decoder = null;
     this.config = null;
@@ -198,7 +251,8 @@ class H264Player {
   }
 
   get stats() {
-    return { fps: Math.round(this.fps * 10) / 10, frames: this.frames, dropped: this.dropped,
+    return { fps: Math.round(this.fps * 10) / 10, frames: this.frames, dropped: this.dropped, late: this.lateDropped,
+             queued: this._queue.length,
              decodeQueue: this.decoder ? this.decoder.decodeQueueSize : 0 };
   }
 }

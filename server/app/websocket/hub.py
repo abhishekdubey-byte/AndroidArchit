@@ -10,6 +10,7 @@ from ..config import (DOWNLOADS_DIR, FAST_MIRROR, MIRROR_BITRATE, MIRROR_FPS, MI
                       download_url)
 from ..services.scrcpy_session import MirrorUnavailable, ScrcpySession
 from .media_fanout import MediaFanout
+from ..services.input_router import InputRouter
 from ..services.device_manager import DeviceManager
 from ..services.cam_record import display_name
 from ..services.adb_bridge import ADBBridge, UnsupportedText
@@ -45,6 +46,7 @@ class WebSocketHub:
         self.fanout = MediaFanout()                # H.264 packets → dashboards (per-viewer backpressure)
         self.mirror_sessions: Dict[str, ScrcpySession] = {}  # device_id -> running fast USB mirror
         self._fast_mirror_failed: Dict[str, float] = {}      # device_id -> when fast mirroring last failed
+        self.input_router = InputRouter(adb_bridge, device_manager, self.mirror_sessions)
         self.pb = None  # PowerBoosters gateway, attached in main.py
 
         # Subscribe to device manager and AI agent events
@@ -262,7 +264,7 @@ class WebSocketHub:
             dev = self.device_manager.get_device(device_id)
             if dev:
                 x, y = int(payload.get("x", 0)), int(payload.get("y", 0))
-                await self.adb.inject_tap(dev.serial, x, y)
+                await self.input_router.tap(dev.id, x, y)
 
         elif msg_type == "INPUT_SWIPE":
             dev = self.device_manager.get_device(device_id)
@@ -270,20 +272,20 @@ class WebSocketHub:
                 x1, y1 = int(payload.get("x1", 0)), int(payload.get("y1", 0))
                 x2, y2 = int(payload.get("x2", 0)), int(payload.get("y2", 0))
                 dur = int(payload.get("duration_ms", 300))
-                await self.adb.inject_swipe(dev.serial, x1, y1, x2, y2, dur)
+                await self.input_router.swipe(dev.id, x1, y1, x2, y2, dur)
 
         elif msg_type == "INPUT_KEY":
             dev = self.device_manager.get_device(device_id)
             if dev:
                 key = payload.get("key", "BACK")
-                await self.adb.inject_key(dev.serial, key)
+                await self.input_router.key(dev.id, key)
 
         elif msg_type == "INPUT_TEXT":
             dev = self.device_manager.get_device(device_id)
             if dev:
                 text = payload.get("text", "")
                 try:
-                    await self.adb.inject_text(dev.serial, text)
+                    await self.input_router.text(dev.id, text)
                 except UnsupportedText as e:
                     await websocket.send_json({"type": "INPUT_ERROR", "device_id": device_id,
                                                "payload": {"message": str(e)}})

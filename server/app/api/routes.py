@@ -15,6 +15,10 @@ from ..config import DOWNLOADS_DIR, UPLOADS_DIR, download_url
 def create_router(device_manager: DeviceManager, adb_bridge: ADBBridge, ai_agent: AIAgentOperator, ws_hub: Optional[Any] = None) -> APIRouter:
     router = APIRouter(prefix="/api")
 
+    def router_for_input():
+        """Fast USB input via the hub's scrcpy control socket when the hub is there; plain ADB otherwise."""
+        return ws_hub.input_router if ws_hub is not None and hasattr(ws_hub, "input_router") else None
+
     def resolve_device(device_id: str) -> Device:
         dev = device_manager.get_device(device_id)
         if not dev:
@@ -87,9 +91,15 @@ def create_router(device_manager: DeviceManager, adb_bridge: ADBBridge, ai_agent
     @router.post("/devices/{device_id}/action/touch")
     async def inject_touch(device_id: str, action: TouchAction):
         dev = resolve_device(device_id)
+        ir = router_for_input()
         if action.action == "swipe" and action.x2 is not None and action.y2 is not None:
             dur = action.duration_ms or 300
-            await adb_bridge.inject_swipe(dev.serial, action.x, action.y, action.x2, action.y2, dur)
+            if ir:
+                await ir.swipe(dev.id, action.x, action.y, action.x2, action.y2, dur)
+            else:
+                await adb_bridge.inject_swipe(dev.serial, action.x, action.y, action.x2, action.y2, dur)
+        elif ir:
+            await ir.tap(dev.id, action.x, action.y)
         else:
             await adb_bridge.inject_tap(dev.serial, action.x, action.y)
         return {"status": "success", "action": action.action}
@@ -97,14 +107,22 @@ def create_router(device_manager: DeviceManager, adb_bridge: ADBBridge, ai_agent
     @router.post("/devices/{device_id}/action/key")
     async def inject_key(device_id: str, action: KeyAction):
         dev = resolve_device(device_id)
-        await adb_bridge.inject_key(dev.serial, action.key)
+        ir = router_for_input()
+        if ir:
+            await ir.key(dev.id, action.key)
+        else:
+            await adb_bridge.inject_key(dev.serial, action.key)
         return {"status": "success", "key": action.key}
 
     @router.post("/devices/{device_id}/action/text")
     async def inject_text(device_id: str, action: TextAction):
         dev = resolve_device(device_id)
+        ir = router_for_input()
         try:
-            await adb_bridge.inject_text(dev.serial, action.text)
+            if ir:
+                await ir.text(dev.id, action.text)
+            else:
+                await adb_bridge.inject_text(dev.serial, action.text)
         except UnsupportedText as e:
             raise HTTPException(status_code=422, detail=str(e))
         return {"status": "success"}
